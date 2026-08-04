@@ -6,9 +6,9 @@
 
     <application
         android:allowBackup="true"
-        android:icon="@drawable/ic_app"
+        android:icon="@mipmap/ic_launcher"
         android:label="简播"
-        android:roundIcon="@drawable/ic_app"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Jianbo">
         <activity
