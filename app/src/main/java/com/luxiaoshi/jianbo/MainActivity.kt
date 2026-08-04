@@ -1,8 +1,8 @@
 package com.luxiaoshi.jianbo
 
 import android.Manifest
-import android.graphics.Bitmap
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -97,6 +98,7 @@ private fun JianboApp(viewModel: LibraryViewModel) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var openedGroupKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var returnVideoIndex by rememberSaveable { mutableStateOf<Int?>(null) }
     var playback by remember { mutableStateOf<Playback?>(null) }
     val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO
     else Manifest.permission.READ_EXTERNAL_STORAGE
@@ -114,13 +116,33 @@ private fun JianboApp(viewModel: LibraryViewModel) {
     }
 
     playback?.let {
-        PlayerScreen(it.videos, it.index, onExit = { playback = null })
+        PlayerScreen(
+            videos = it.videos,
+            startIndex = it.index,
+            onExit = { playback = null },
+        )
         return
     }
+
     val group = state.groups.firstOrNull { it.key == openedGroupKey }
-    if (openedGroupKey != null && group == null) openedGroupKey = null
+    if (openedGroupKey != null && group == null) {
+        openedGroupKey = null
+        returnVideoIndex = null
+    }
+
     if (group != null) {
-        GroupScreen(group, { openedGroupKey = null }) { index -> playback = Playback(group.videos, index) }
+        GroupScreen(
+            group = group,
+            focusIndex = returnVideoIndex,
+            onBack = {
+                openedGroupKey = null
+                returnVideoIndex = null
+            },
+            play = { index ->
+                returnVideoIndex = index
+                playback = Playback(group.videos, index)
+            },
+        )
     } else {
         LibraryScreen(
             state = state,
@@ -129,7 +151,10 @@ private fun JianboApp(viewModel: LibraryViewModel) {
             refresh = viewModel::refresh,
             hideGroups = viewModel::hideGroups,
             restoreGroups = viewModel::restoreHiddenGroups,
-            openGroup = { openedGroupKey = it.key },
+            openGroup = {
+                openedGroupKey = it.key
+                returnVideoIndex = null
+            },
         )
     }
 }
@@ -148,14 +173,22 @@ private fun LibraryScreen(
     var selecting by rememberSaveable { mutableStateOf(false) }
     var selected by remember { mutableStateOf(emptySet<String>()) }
     var confirmHide by remember { mutableStateOf(false) }
-    BackHandler(selecting) { selecting = false; selected = emptySet() }
+    BackHandler(selecting) {
+        selecting = false
+        selected = emptySet()
+    }
 
     Scaffold(topBar = {
         TopAppBar(
             title = { Text(if (selecting) "已选择 ${selected.size} 个分组" else "简播") },
             navigationIcon = {
-                if (selecting) IconButton(onClick = { selecting = false; selected = emptySet() }) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "退出批量管理")
+                if (selecting) {
+                    IconButton(onClick = {
+                        selecting = false
+                        selected = emptySet()
+                    }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "退出批量管理")
+                    }
                 }
             },
             actions = {
@@ -169,7 +202,9 @@ private fun LibraryScreen(
                 } else {
                     IconButton(onClick = refresh) { Icon(Icons.Default.Refresh, "刷新") }
                     if (state.hiddenGroupCount > 0) {
-                        IconButton(onClick = restoreGroups) { Icon(Icons.Default.Restore, "恢复隐藏分组") }
+                        IconButton(onClick = restoreGroups) {
+                            Icon(Icons.Default.Restore, "恢复隐藏分组")
+                        }
                     }
                 }
             },
@@ -189,7 +224,9 @@ private fun LibraryScreen(
                             Text("手动导入文件夹")
                         }
                         if (!state.permissionGranted) {
-                            FilledTonalButton(onClick = requestPermission) { Text("授权自动扫描") }
+                            FilledTonalButton(onClick = requestPermission) {
+                                Text("授权自动扫描")
+                            }
                         }
                     }
                 }
@@ -201,53 +238,100 @@ private fun LibraryScreen(
                     Card(
                         modifier = Modifier.fillMaxWidth().combinedClickable(
                             onClick = {
-                                if (selecting) selected = selected.toggle(group.key) else openGroup(group)
+                                if (selecting) selected = selected.toggle(group.key)
+                                else openGroup(group)
                             },
-                            onLongClick = { selecting = true; selected = selected + group.key },
+                            onLongClick = {
+                                selecting = true
+                                selected = selected + group.key
+                            },
                         ),
                         shape = RoundedCornerShape(16.dp),
                         colors = CardDefaults.cardColors(
-                            containerColor = if (checked) MaterialTheme.colorScheme.secondaryContainer
-                            else MaterialTheme.colorScheme.surface,
+                            containerColor = if (checked) {
+                                MaterialTheme.colorScheme.secondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surface
+                            },
                         ),
                     ) {
-                        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(if (checked) Icons.Default.CheckCircle else Icons.Default.Folder, null, Modifier.size(40.dp))
+                        Row(
+                            Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                if (checked) Icons.Default.CheckCircle else Icons.Default.Folder,
+                                null,
+                                Modifier.size(40.dp),
+                            )
                             Spacer(Modifier.size(12.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(group.name, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                Text("${group.videos.size} 个视频 · ${if (group.source == VideoGroup.Source.MANUAL) "手动导入" else "自动扫描"}")
+                                Text(
+                                    group.name,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    "${group.videos.size} 个视频 · ${if (group.source == VideoGroup.Source.MANUAL) "手动导入" else "自动扫描"}",
+                                )
                             }
                         }
                     }
                 }
             }
-            if (state.isLoading) CircularProgressIndicator(Modifier.align(Alignment.Center))
+            if (state.isLoading) {
+                CircularProgressIndicator(Modifier.align(Alignment.Center))
+            }
             state.errorMessage?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp))
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
+                )
             }
         }
     }
 
-    if (confirmHide) AlertDialog(
-        onDismissRequest = { confirmHide = false },
-        title = { Text("从简播移除分组？") },
-        text = { Text("只隐藏所选分组，不会删除手机中的视频文件。以后可用右上角恢复按钮重新显示。") },
-        confirmButton = {
-            TextButton(onClick = {
-                hideGroups(selected)
-                selected = emptySet()
-                selecting = false
-                confirmHide = false
-            }) { Text("仅移除分组") }
-        },
-        dismissButton = { TextButton(onClick = { confirmHide = false }) { Text("取消") } },
-    )
+    if (confirmHide) {
+        AlertDialog(
+            onDismissRequest = { confirmHide = false },
+            title = { Text("从简播移除分组？") },
+            text = { Text("只隐藏所选分组，不会删除手机中的视频文件。以后可用右上角恢复按钮重新显示。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    hideGroups(selected)
+                    selected = emptySet()
+                    selecting = false
+                    confirmHide = false
+                }) {
+                    Text("仅移除分组")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmHide = false }) { Text("取消") }
+            },
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun GroupScreen(group: VideoGroup, onBack: () -> Unit, play: (Int) -> Unit) {
+private fun GroupScreen(
+    group: VideoGroup,
+    focusIndex: Int?,
+    onBack: () -> Unit,
+    play: (Int) -> Unit,
+) {
+    val safeFocusIndex = focusIndex?.coerceIn(group.videos.indices)
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = safeFocusIndex ?: 0,
+    )
+
+    LaunchedEffect(group.key, safeFocusIndex) {
+        safeFocusIndex?.let { listState.scrollToItem(it) }
+    }
+
     BackHandler(onBack = onBack)
     Scaffold(topBar = {
         TopAppBar(
@@ -258,19 +342,46 @@ private fun GroupScreen(group: VideoGroup, onBack: () -> Unit, play: (Int) -> Un
                 }
             },
             navigationIcon = {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回")
+                }
             },
         )
     }) { padding ->
-        LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(10.dp)) {
-            itemsIndexed(group.videos, key = { _, v -> v.id }) { index, video ->
-                Card(onClick = { play(index) }, modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
-                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentPadding = PaddingValues(10.dp),
+        ) {
+            itemsIndexed(group.videos, key = { _, video -> video.id }) { index, video ->
+                Card(
+                    onClick = { play(index) },
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (index == safeFocusIndex) {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surface
+                        },
+                    ),
+                ) {
+                    Row(
+                        Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         VideoThumbnail(video)
                         Spacer(Modifier.size(12.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(video.name, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Text(formatDuration(video.durationMs), style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                video.name,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                formatDuration(video.durationMs),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                         }
                         Icon(Icons.Default.PlayCircle, "播放")
                     }
@@ -313,7 +424,11 @@ private fun VideoThumbnail(video: VideoItem) {
 }
 
 @Composable
-private fun EmptyLibrary(granted: Boolean, request: () -> Unit, importFolder: () -> Unit) {
+private fun EmptyLibrary(
+    granted: Boolean,
+    request: () -> Unit,
+    importFolder: () -> Unit,
+) {
     Column(
         Modifier.fillMaxWidth().padding(vertical = 50.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -327,11 +442,15 @@ private fun EmptyLibrary(granted: Boolean, request: () -> Unit, importFolder: ()
     }
 }
 
-private fun Set<String>.toggle(value: String): Set<String> = if (value in this) this - value else this + value
+private fun Set<String>.toggle(value: String): Set<String> =
+    if (value in this) this - value else this + value
 
 private fun formatDuration(ms: Long): String {
     if (ms <= 0) return "时长未知"
-    val s = ms / 1000
-    return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, s / 60 % 60, s % 60)
-    else "%02d:%02d".format(s / 60, s % 60)
+    val seconds = ms / 1000
+    return if (seconds >= 3600) {
+        "%d:%02d:%02d".format(seconds / 3600, seconds / 60 % 60, seconds % 60)
+    } else {
+        "%02d:%02d".format(seconds / 60, seconds % 60)
+    }
 }
