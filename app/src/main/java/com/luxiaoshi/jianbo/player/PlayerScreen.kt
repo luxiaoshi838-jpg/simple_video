@@ -7,8 +7,10 @@ import android.media.AudioManager
 import android.view.ViewGroup
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -31,7 +34,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -47,18 +49,25 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -85,6 +94,7 @@ private enum class VerticalGestureMode { BRIGHTNESS, VIDEO_SWITCH, VOLUME }
 fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     val context = LocalContext.current
     val activity = context as Activity
+    val lifecycleOwner = LocalLifecycleOwner.current
     val audio = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
 
     val exoPlayer = remember {
@@ -124,6 +134,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     var durationMs by remember { mutableLongStateOf(0L) }
     var isSeeking by remember { mutableStateOf(false) }
     var seekPreviewMs by remember { mutableLongStateOf(0L) }
+    var resumeAfterForeground by remember { mutableStateOf(false) }
     val isLandscapeScreen = width > height
 
     fun selectVideo(index: Int) {
@@ -173,12 +184,12 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
         PlaybackBackend.VLC -> vlcPlayer.length.takeIf { it > 0L } ?: 0L
     }
 
-    fun pausePlayback() {
+    fun pausePlayback(showControls: Boolean = true) {
         when (backend) {
             PlaybackBackend.MEDIA3 -> exoPlayer.pause()
             PlaybackBackend.VLC -> vlcPlayer.pause()
         }
-        controlsVisible = true
+        if (showControls) controlsVisible = true
     }
 
     fun resumePlayback() {
@@ -210,10 +221,40 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
 
     BackHandler(onBack = onExit)
 
+    DisposableEffect(lifecycleOwner, backend) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> {
+                    resumeAfterForeground = isPlayingNow()
+                    if (resumeAfterForeground) {
+                        pausePlayback(showControls = false)
+                    }
+                }
+
+                Lifecycle.Event.ON_START -> {
+                    if (resumeAfterForeground) {
+                        resumeAfterForeground = false
+                        resumePlayback()
+                    }
+                }
+
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     DisposableEffect(exoPlayer, backend, currentIndex) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (backend == PlaybackBackend.MEDIA3) playing = isPlaying
+            }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                if (backend == PlaybackBackend.MEDIA3 && videoSize.width > 0 && videoSize.height > 0) {
+                    targetLandscape = videoSize.width > videoSize.height
+                }
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -500,14 +541,14 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                 onClick = { resumePlayback() },
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .size(92.dp)
+                    .size(72.dp)
                     .background(Color.Black.copy(alpha = 0.55f), MaterialTheme.shapes.extraLarge),
             ) {
                 Icon(
                     Icons.Default.PlayArrow,
                     contentDescription = "继续播放",
                     tint = Color.White,
-                    modifier = Modifier.size(68.dp),
+                    modifier = Modifier.size(50.dp),
                 )
             }
         }
@@ -528,6 +569,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                         videos.getOrNull(currentIndex)?.name.orEmpty(),
                         color = Color.White,
                         maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
                     )
                     TextButton(onClick = { speedDialog = true }) {
@@ -545,46 +587,53 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     val shownPosition = if (isSeeking) seekPreviewMs else positionMs
                     val sliderMaximum = durationMs.coerceAtLeast(1L)
-                    Slider(
-                        value = shownPosition.coerceIn(0L, sliderMaximum).toFloat(),
+                    CompactSeekBar(
+                        value = shownPosition.coerceIn(0L, sliderMaximum),
+                        maximum = sliderMaximum,
+                        enabled = durationMs > 0L,
                         onValueChange = { value ->
                             isSeeking = true
-                            seekPreviewMs = value.toLong().coerceIn(0L, sliderMaximum)
+                            seekPreviewMs = value
                             controlsVisible = true
                         },
                         onValueChangeFinished = {
                             seekTo(seekPreviewMs)
                             isSeeking = false
                         },
-                        valueRange = 0f..sliderMaximum.toFloat(),
-                        enabled = durationMs > 0L,
-                        modifier = Modifier.fillMaxWidth(),
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        Text(formatPlaybackTime(shownPosition), color = Color.White)
-                        Text(formatPlaybackTime(durationMs), color = Color.White)
+                        Text(
+                            formatPlaybackTime(shownPosition),
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                        Text(
+                            formatPlaybackTime(durationMs),
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
                     }
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(28.dp),
+                        horizontalArrangement = Arrangement.spacedBy(18.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         IconButton(
                             onClick = { seekRelative(-SEEK_STEP_MS) },
-                            modifier = Modifier.size(58.dp),
+                            modifier = Modifier.size(42.dp),
                         ) {
                             Icon(
                                 Icons.Default.FastRewind,
                                 "后退五秒",
                                 tint = Color.White,
-                                modifier = Modifier.size(42.dp),
+                                modifier = Modifier.size(28.dp),
                             )
                         }
 
@@ -592,36 +641,28 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                             onClick = {
                                 if (isPlayingNow()) pausePlayback() else resumePlayback()
                             },
-                            modifier = Modifier.size(72.dp),
+                            modifier = Modifier.size(50.dp),
                         ) {
                             Icon(
                                 if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
                                 "播放或暂停",
                                 tint = Color.White,
-                                modifier = Modifier.size(56.dp),
+                                modifier = Modifier.size(36.dp),
                             )
                         }
 
                         IconButton(
                             onClick = { seekRelative(SEEK_STEP_MS) },
-                            modifier = Modifier.size(58.dp),
+                            modifier = Modifier.size(42.dp),
                         ) {
                             Icon(
                                 Icons.Default.FastForward,
                                 "前进五秒",
                                 tint = Color.White,
-                                modifier = Modifier.size(42.dp),
+                                modifier = Modifier.size(28.dp),
                             )
                         }
                     }
-                    Text(
-                        if (isLandscapeScreen) {
-                            "左侧调亮度 · 中间上下滑切换视频 · 右侧调音量"
-                        } else {
-                            "竖向屏上下滑切换视频"
-                        },
-                        color = Color.White,
-                    )
                 }
             }
         }
@@ -665,6 +706,63 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     }
 }
 
+@Composable
+private fun CompactSeekBar(
+    value: Long,
+    maximum: Long,
+    enabled: Boolean,
+    onValueChange: (Long) -> Unit,
+    onValueChangeFinished: () -> Unit,
+) {
+    val safeMaximum = maximum.coerceAtLeast(1L)
+    val progress = (value.toFloat() / safeMaximum.toFloat()).coerceIn(0f, 1f)
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(18.dp)
+            .pointerInput(enabled, safeMaximum) {
+                if (!enabled) return@pointerInput
+                detectHorizontalDragGestures(
+                    onDragStart = { point ->
+                        val ratio = (point.x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f)
+                        onValueChange((ratio * safeMaximum).toLong())
+                    },
+                    onHorizontalDrag = { change, _ ->
+                        change.consume()
+                        val ratio = (change.position.x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f)
+                        onValueChange((ratio * safeMaximum).toLong())
+                    },
+                    onDragEnd = onValueChangeFinished,
+                    onDragCancel = onValueChangeFinished,
+                )
+            },
+    ) {
+        val centerY = size.height / 2f
+        val trackStart = 5.dp.toPx()
+        val trackEnd = (size.width - 5.dp.toPx()).coerceAtLeast(trackStart)
+        val thumbX = trackStart + (trackEnd - trackStart) * progress
+        drawLine(
+            color = Color.White.copy(alpha = if (enabled) 0.35f else 0.18f),
+            start = Offset(trackStart, centerY),
+            end = Offset(trackEnd, centerY),
+            strokeWidth = 2.dp.toPx(),
+            cap = StrokeCap.Round,
+        )
+        drawLine(
+            color = Color.White.copy(alpha = if (enabled) 0.95f else 0.35f),
+            start = Offset(trackStart, centerY),
+            end = Offset(thumbX, centerY),
+            strokeWidth = 2.dp.toPx(),
+            cap = StrokeCap.Round,
+        )
+        drawCircle(
+            color = Color.White.copy(alpha = if (enabled) 1f else 0.45f),
+            radius = 4.5.dp.toPx(),
+            center = Offset(thumbX, centerY),
+        )
+    }
+}
+
 private fun preferredBackend(video: VideoItem?): PlaybackBackend {
     val extension = video?.name
         ?.substringAfterLast('.', missingDelimiterValue = "")
@@ -674,10 +772,12 @@ private fun preferredBackend(video: VideoItem?): PlaybackBackend {
     else PlaybackBackend.MEDIA3
 }
 
-private fun naturalLandscape(video: VideoItem?): Boolean? = when {
-    video == null -> null
-    video.width > 0 && video.height > 0 -> video.width > video.height
-    else -> null
+private fun naturalLandscape(video: VideoItem?): Boolean? {
+    if (video == null || video.width <= 0 || video.height <= 0) return null
+    val quarterTurn = video.rotationDegrees == 90 || video.rotationDegrees == 270
+    val displayedWidth = if (quarterTurn) video.height else video.width
+    val displayedHeight = if (quarterTurn) video.width else video.height
+    return displayedWidth > displayedHeight
 }
 
 private fun formatPlaybackTime(ms: Long): String {
