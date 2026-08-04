@@ -21,8 +21,8 @@ jobs:
       - name: Apply tracked source patches
         run: |
           if [ -f tools/v108-controls.patch ]; then
-            git apply --check tools/v108-controls.patch
-            git apply tools/v108-controls.patch
+            git apply --recount --check tools/v108-controls.patch
+            git apply --recount tools/v108-controls.patch
           fi
 
       - name: Set up Java 17
