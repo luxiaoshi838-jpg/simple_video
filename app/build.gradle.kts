@@ -29,7 +29,7 @@ val hasReleaseSigning = listOf(
 
 android {
     namespace = "com.luxiaoshi.jianbo"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.luxiaoshi.jianbo"
