@@ -1,6 +1,7 @@
 package com.luxiaoshi.jianbo
 
 import android.Manifest
+import android.media.MediaMetadataRetriever
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +13,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -55,11 +58,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -71,6 +79,8 @@ import com.luxiaoshi.jianbo.data.VideoGroup
 import com.luxiaoshi.jianbo.data.VideoItem
 import com.luxiaoshi.jianbo.player.PlayerScreen
 import com.luxiaoshi.jianbo.ui.theme.JianboTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private val viewModel: LibraryViewModel by viewModels()
@@ -257,8 +267,8 @@ private fun GroupScreen(group: VideoGroup, onBack: () -> Unit, play: (Int) -> Un
         LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(10.dp)) {
             itemsIndexed(group.videos, key = { _, v -> v.id }) { index, video ->
                 Card(onClick = { play(index) }, modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
-                    Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.VideoFile, null, Modifier.size(42.dp))
+                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        VideoThumbnail(video)
                         Spacer(Modifier.size(12.dp))
                         Column(Modifier.weight(1f)) {
                             Text(video.name, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -268,6 +278,46 @@ private fun GroupScreen(group: VideoGroup, onBack: () -> Unit, play: (Int) -> Un
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun VideoThumbnail(video: VideoItem) {
+    val context = LocalContext.current
+    val frame by produceState<ImageBitmap?>(initialValue = null, key1 = video.id) {
+        value = withContext(Dispatchers.IO) {
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(context, video.uri)
+                retriever.getFrameAtTime(
+                    1_000_000L,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                )?.asImageBitmap()
+            } catch (_: Throwable) {
+                null
+            } finally {
+                runCatching { retriever.release() }
+            }
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .size(width = 112.dp, height = 64.dp)
+            .clip(RoundedCornerShape(9.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (frame != null) {
+            Image(
+                bitmap = requireNotNull(frame),
+                contentDescription = "${video.name}预览图",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+        } else {
+            Icon(Icons.Default.VideoFile, null, Modifier.size(34.dp))
         }
     }
 }
