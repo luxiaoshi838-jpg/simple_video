@@ -154,7 +154,7 @@ class LibraryRepository(private val context: Context) {
                 for (child in children) {
                     when {
                         child.isDirectory -> queue.add(child)
-                        child.isFile && child.type?.startsWith("video/") == true -> {
+                        child.isFile && isVideoFile(child) -> {
                             result += VideoItem(
                                 id = "saf:${child.uri}",
                                 uri = child.uri,
@@ -171,6 +171,16 @@ class LibraryRepository(private val context: Context) {
         return result
     }
 
+    private fun isVideoFile(file: DocumentFile): Boolean {
+        val mimeType = file.type.orEmpty().lowercase(Locale.ROOT)
+        if (mimeType.startsWith("video/")) return true
+        val extension = file.name
+            ?.substringAfterLast('.', missingDelimiterValue = "")
+            ?.lowercase(Locale.ROOT)
+            .orEmpty()
+        return extension in VIDEO_EXTENSIONS
+    }
+
     private fun android.database.Cursor.stringOrNull(index: Int): String? =
         if (index >= 0 && !isNull(index)) getString(index) else null
 
@@ -184,6 +194,13 @@ class LibraryRepository(private val context: Context) {
         const val PREFS_NAME = "jianbo_library"
         const val KEY_MANUAL_TREES = "manual_tree_uris"
         const val KEY_HIDDEN_GROUPS = "hidden_group_keys"
+
+        val VIDEO_EXTENSIONS = setOf(
+            "3g2", "3gp", "amv", "asf", "avi", "divx", "dv", "f4v", "flv",
+            "m2t", "m2ts", "m4v", "mkv", "mov", "mp2", "mp4", "mpe", "mpeg",
+            "mpg", "mts", "mxf", "ogm", "ogv", "rm", "rmvb", "ts", "vob",
+            "webm", "wmv",
+        )
 
         val FILE_NAME_COMPARATOR = Comparator<VideoItem> { left, right ->
             compareNaturalFileNames(left.name, right.name)
