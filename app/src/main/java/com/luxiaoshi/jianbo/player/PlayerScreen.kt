@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.media.AudioManager
+import android.view.ViewGroup
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -56,17 +57,29 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import com.luxiaoshi.jianbo.data.VideoItem
 import kotlinx.coroutines.delay
 import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer as VlcMediaPlayer
 import org.videolan.libvlc.util.VLCVideoLayout
+import java.util.Locale
 import kotlin.math.abs
 
 private val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f)
 private const val SEEK_STEP_MS = 5_000L
 
+private val VLC_PREFERRED_EXTENSIONS = setOf(
+    "amv", "asf", "avi", "divx", "dv", "flv", "mxf", "ogm", "rm", "rmvb", "vob", "wmv",
+)
+
+private enum class PlaybackBackend { MEDIA3, VLC }
 private enum class VerticalGestureMode { BRIGHTNESS, VIDEO_SWITCH, VOLUME }
 
 @Composable
@@ -74,6 +87,12 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     val context = LocalContext.current
     val activity = context as Activity
     val audio = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+
+    val exoPlayer = remember {
+        ExoPlayer.Builder(context).build().apply {
+            repeatMode = Player.REPEAT_MODE_OFF
+        }
+    }
     val libVLC = remember {
         LibVLC(
             context,
@@ -81,13 +100,15 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                 "--audio-time-stretch",
                 "--no-sub-autodetect-file",
                 "--network-caching=300",
+                "--file-caching=300",
             ),
         )
     }
-    val player = remember { VlcMediaPlayer(libVLC) }
+    val vlcPlayer = remember { VlcMediaPlayer(libVLC) }
 
     val initialIndex = startIndex.coerceIn(videos.indices)
     var currentIndex by remember { mutableIntStateOf(initialIndex) }
+    var backend by remember { mutableStateOf(preferredBackend(videos.getOrNull(initialIndex))) }
     var playing by remember { mutableStateOf(false) }
     var controlsVisible by remember { mutableStateOf(true) }
     var speed by remember { mutableFloatStateOf(1f) }
@@ -99,71 +120,144 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     var overlay by remember { mutableStateOf<String?>(null) }
     var width by remember { mutableIntStateOf(1) }
     var height by remember { mutableIntStateOf(1) }
-    var videoLayout by remember { mutableStateOf<VLCVideoLayout?>(null) }
+    var vlcVideoLayout by remember { mutableStateOf<VLCVideoLayout?>(null) }
+    var fallbackPositionMs by remember { mutableStateOf(0L) }
     val isLandscapeScreen = width > height
 
-    fun loadVideo(index: Int) {
+    fun selectVideo(index: Int) {
         val safeIndex = index.coerceIn(videos.indices)
         val video = videos[safeIndex]
         currentIndex = safeIndex
+        backend = preferredBackend(video)
+        fallbackPositionMs = 0L
         rotatedQuarterTurn = false
         targetLandscape = naturalLandscape(video)
-        runCatching { player.stop() }
-        val media = Media(libVLC, video.uri).apply {
-            setHWDecoderEnabled(true, false)
-            addOption(":network-caching=300")
-        }
-        player.setMedia(media)
-        media.release()
-        player.play()
+        playing = false
         controlsVisible = true
     }
 
     fun playPreviousVideo() {
         if (currentIndex > 0) {
-            loadVideo(currentIndex - 1)
+            selectVideo(currentIndex - 1)
             overlay = "上一个视频"
         }
     }
 
     fun playNextVideo() {
         if (currentIndex < videos.lastIndex) {
-            loadVideo(currentIndex + 1)
+            selectVideo(currentIndex + 1)
             overlay = "下一个视频"
         }
     }
 
+    fun isPlayingNow(): Boolean = when (backend) {
+        PlaybackBackend.MEDIA3 -> exoPlayer.isPlaying
+        PlaybackBackend.VLC -> vlcPlayer.isPlaying
+    }
+
+    fun pausePlayback() {
+        when (backend) {
+            PlaybackBackend.MEDIA3 -> exoPlayer.pause()
+            PlaybackBackend.VLC -> vlcPlayer.pause()
+        }
+        controlsVisible = true
+    }
+
+    fun resumePlayback() {
+        when (backend) {
+            PlaybackBackend.MEDIA3 -> exoPlayer.play()
+            PlaybackBackend.VLC -> vlcPlayer.play()
+        }
+        controlsVisible = true
+    }
+
+    fun seekRelative(deltaMs: Long) {
+        when (backend) {
+            PlaybackBackend.MEDIA3 -> {
+                val duration = exoPlayer.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
+                exoPlayer.seekTo((exoPlayer.currentPosition + deltaMs).coerceIn(0L, duration))
+            }
+
+            PlaybackBackend.VLC -> {
+                val duration = vlcPlayer.length.takeIf { it > 0L } ?: Long.MAX_VALUE
+                vlcPlayer.time = (vlcPlayer.time + deltaMs).coerceIn(0L, duration)
+            }
+        }
+        controlsVisible = true
+    }
+
     BackHandler(onBack = onExit)
 
-    DisposableEffect(player) {
-        player.setEventListener { event ->
+    DisposableEffect(exoPlayer, backend) {
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (backend == PlaybackBackend.MEDIA3) playing = isPlaying
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (backend == PlaybackBackend.MEDIA3 && playbackState == Player.STATE_ENDED) {
+                    playing = false
+                    controlsVisible = true
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                if (backend == PlaybackBackend.MEDIA3) {
+                    fallbackPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+                    playing = false
+                    controlsVisible = true
+                    overlay = "系统解码失败，正在切换兼容内核"
+                    backend = PlaybackBackend.VLC
+                }
+            }
+        }
+        exoPlayer.addListener(listener)
+        onDispose { exoPlayer.removeListener(listener) }
+    }
+
+    DisposableEffect(vlcPlayer, backend, speed) {
+        vlcPlayer.setEventListener { event ->
+            if (backend != PlaybackBackend.VLC) return@setEventListener
             when (event.type) {
                 VlcMediaPlayer.Event.Playing -> {
                     playing = true
-                    runCatching { player.rate = speed }
+                    runCatching { vlcPlayer.rate = speed }
+                    if (fallbackPositionMs > 0L) {
+                        vlcPlayer.time = fallbackPositionMs
+                        fallbackPositionMs = 0L
+                    }
                 }
 
                 VlcMediaPlayer.Event.Paused,
                 VlcMediaPlayer.Event.Stopped,
                 VlcMediaPlayer.Event.EndReached,
-                VlcMediaPlayer.Event.EncounteredError,
                 -> {
                     playing = false
                     controlsVisible = true
                 }
+
+                VlcMediaPlayer.Event.EncounteredError -> {
+                    playing = false
+                    controlsVisible = true
+                    overlay = "该视频无法播放"
+                }
             }
         }
+        onDispose { vlcPlayer.setEventListener(null) }
+    }
 
+    DisposableEffect(Unit) {
         val controller = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         controller.hide(WindowInsetsCompat.Type.systemBars())
         activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         onDispose {
-            runCatching { player.stop() }
-            runCatching { player.detachViews() }
-            player.setEventListener(null)
-            player.release()
+            runCatching { exoPlayer.stop() }
+            exoPlayer.release()
+            runCatching { vlcPlayer.stop() }
+            runCatching { vlcPlayer.detachViews() }
+            vlcPlayer.release()
             libVLC.release()
             activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -171,18 +265,45 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
         }
     }
 
-    DisposableEffect(videoLayout) {
-        val layout = videoLayout
-        if (layout != null) {
-            player.attachViews(layout, null, true, false)
+    DisposableEffect(vlcVideoLayout, backend) {
+        val layout = vlcVideoLayout
+        if (backend == PlaybackBackend.VLC && layout != null) {
+            runCatching { vlcPlayer.detachViews() }
+            vlcPlayer.attachViews(layout, null, true, false)
         }
         onDispose {
-            if (layout != null) runCatching { player.detachViews() }
+            if (layout != null) runCatching { vlcPlayer.detachViews() }
         }
     }
 
-    LaunchedEffect(videoLayout) {
-        if (videoLayout != null) loadVideo(currentIndex)
+    LaunchedEffect(currentIndex, backend, vlcVideoLayout) {
+        val video = videos.getOrNull(currentIndex) ?: return@LaunchedEffect
+        playing = false
+
+        when (backend) {
+            PlaybackBackend.MEDIA3 -> {
+                runCatching { vlcPlayer.stop() }
+                exoPlayer.stop()
+                exoPlayer.setMediaItem(MediaItem.fromUri(video.uri))
+                exoPlayer.prepare()
+                exoPlayer.setPlaybackSpeed(speed)
+                exoPlayer.playWhenReady = true
+            }
+
+            PlaybackBackend.VLC -> {
+                if (vlcVideoLayout == null) return@LaunchedEffect
+                exoPlayer.stop()
+                runCatching { vlcPlayer.stop() }
+                val media = Media(libVLC, video.uri).apply {
+                    setHWDecoderEnabled(true, false)
+                    addOption(":network-caching=300")
+                    addOption(":file-caching=300")
+                }
+                vlcPlayer.setMedia(media)
+                media.release()
+                vlcPlayer.play()
+            }
+        }
     }
 
     LaunchedEffect(targetLandscape) {
@@ -202,7 +323,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
 
     LaunchedEffect(overlay) {
         if (overlay != null) {
-            delay(700)
+            delay(1200)
             overlay = null
         }
     }
@@ -215,7 +336,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                 width = it.width.coerceAtLeast(1)
                 height = it.height.coerceAtLeast(1)
             }
-            .pointerInput(width, height, currentIndex) {
+            .pointerInput(width, height, currentIndex, backend) {
                 var gestureMode = VerticalGestureMode.VIDEO_SWITCH
                 var startBrightness = 0.5f
                 var startVolume = 0
@@ -270,14 +391,13 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                     onDragCancel = { totalY = 0f },
                 )
             }
-            .pointerInput(playing, controlsVisible, width, height) {
+            .pointerInput(playing, controlsVisible, width, height, backend) {
                 detectTapGestures(
                     onTap = { point ->
                         val inCenter = point.x in width * 0.25f..width * 0.75f &&
                             point.y in height * 0.20f..height * 0.80f
-                        if (inCenter && player.isPlaying) {
-                            player.pause()
-                            controlsVisible = true
+                        if (inCenter && isPlayingNow()) {
+                            pausePlayback()
                         } else if (!inCenter) {
                             controlsVisible = !controlsVisible
                         }
@@ -285,14 +405,39 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                 )
             },
     ) {
-        AndroidView(
-            modifier = Modifier
-                .fillMaxSize()
-                .rotatePlayerLayout(rotatedQuarterTurn),
-            factory = { ctx ->
-                VLCVideoLayout(ctx).also { videoLayout = it }
-            },
-        )
+        when (backend) {
+            PlaybackBackend.MEDIA3 -> {
+                AndroidView(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .rotatePlayerLayout(rotatedQuarterTurn),
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                            )
+                            useController = false
+                            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            player = exoPlayer
+                            setShutterBackgroundColor(android.graphics.Color.BLACK)
+                        }
+                    },
+                    update = { view -> view.player = exoPlayer },
+                )
+            }
+
+            PlaybackBackend.VLC -> {
+                AndroidView(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .rotatePlayerLayout(rotatedQuarterTurn),
+                    factory = { ctx ->
+                        VLCVideoLayout(ctx).also { vlcVideoLayout = it }
+                    },
+                )
+            }
+        }
 
         overlay?.let {
             Surface(
@@ -310,10 +455,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
 
         if (!playing) {
             IconButton(
-                onClick = {
-                    player.play()
-                    controlsVisible = true
-                },
+                onClick = { resumePlayback() },
                 modifier = Modifier
                     .align(Alignment.Center)
                     .size(92.dp)
@@ -366,10 +508,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     IconButton(
-                        onClick = {
-                            player.time = (player.time - SEEK_STEP_MS).coerceAtLeast(0L)
-                            controlsVisible = true
-                        },
+                        onClick = { seekRelative(-SEEK_STEP_MS) },
                         modifier = Modifier.size(58.dp),
                     ) {
                         Icon(
@@ -382,8 +521,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
 
                     IconButton(
                         onClick = {
-                            if (player.isPlaying) player.pause() else player.play()
-                            controlsVisible = true
+                            if (isPlayingNow()) pausePlayback() else resumePlayback()
                         },
                         modifier = Modifier.size(72.dp),
                     ) {
@@ -396,11 +534,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                     }
 
                     IconButton(
-                        onClick = {
-                            val duration = player.length.takeIf { it > 0L } ?: Long.MAX_VALUE
-                            player.time = (player.time + SEEK_STEP_MS).coerceAtMost(duration)
-                            controlsVisible = true
-                        },
+                        onClick = { seekRelative(SEEK_STEP_MS) },
                         modifier = Modifier.size(58.dp),
                     ) {
                         Icon(
@@ -447,7 +581,10 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                                 Button(
                                     onClick = {
                                         speed = value
-                                        runCatching { player.rate = value }
+                                        when (backend) {
+                                            PlaybackBackend.MEDIA3 -> exoPlayer.setPlaybackSpeed(value)
+                                            PlaybackBackend.VLC -> runCatching { vlcPlayer.rate = value }
+                                        }
                                         speedDialog = false
                                     },
                                     modifier = Modifier.weight(1f),
@@ -465,6 +602,15 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
             },
         )
     }
+}
+
+private fun preferredBackend(video: VideoItem?): PlaybackBackend {
+    val extension = video?.name
+        ?.substringAfterLast('.', missingDelimiterValue = "")
+        ?.lowercase(Locale.ROOT)
+        .orEmpty()
+    return if (extension in VLC_PREFERRED_EXTENSIONS) PlaybackBackend.VLC
+    else PlaybackBackend.MEDIA3
 }
 
 private fun naturalLandscape(video: VideoItem?): Boolean? = when {
