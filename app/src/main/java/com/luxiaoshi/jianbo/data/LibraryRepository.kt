@@ -3,6 +3,7 @@ package com.luxiaoshi.jianbo.data
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
@@ -85,6 +86,7 @@ class LibraryRepository(private val context: Context) {
             add(MediaStore.Video.Media.DURATION)
             add(MediaStore.Video.Media.WIDTH)
             add(MediaStore.Video.Media.HEIGHT)
+            add(MediaStore.Video.Media.ORIENTATION)
             add(MediaStore.Video.Media.DATE_ADDED)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 add(MediaStore.Video.Media.RELATIVE_PATH)
@@ -106,6 +108,7 @@ class LibraryRepository(private val context: Context) {
             val durationColumn = cursor.getColumnIndex(MediaStore.Video.Media.DURATION)
             val widthColumn = cursor.getColumnIndex(MediaStore.Video.Media.WIDTH)
             val heightColumn = cursor.getColumnIndex(MediaStore.Video.Media.HEIGHT)
+            val orientationColumn = cursor.getColumnIndex(MediaStore.Video.Media.ORIENTATION)
             val dateColumn = cursor.getColumnIndex(MediaStore.Video.Media.DATE_ADDED)
             val relativePathColumn = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 cursor.getColumnIndex(MediaStore.Video.Media.RELATIVE_PATH)
@@ -132,6 +135,7 @@ class LibraryRepository(private val context: Context) {
                     durationMs = cursor.longOrZero(durationColumn),
                     width = cursor.intOrZero(widthColumn),
                     height = cursor.intOrZero(heightColumn),
+                    rotationDegrees = normalizeRotation(cursor.intOrZero(orientationColumn)),
                     dateAddedSeconds = cursor.longOrZero(dateColumn),
                 )
             }
@@ -155,12 +159,17 @@ class LibraryRepository(private val context: Context) {
                     when {
                         child.isDirectory -> queue.add(child)
                         child.isFile && isVideoFile(child) -> {
+                            val metadata = readVideoMetadata(child.uri)
                             result += VideoItem(
                                 id = "saf:${child.uri}",
                                 uri = child.uri,
                                 name = child.name ?: "未命名视频",
                                 folderKey = groupKey,
                                 folderName = groupName,
+                                durationMs = metadata.durationMs,
+                                width = metadata.width,
+                                height = metadata.height,
+                                rotationDegrees = metadata.rotationDegrees,
                                 dateAddedSeconds = child.lastModified() / 1_000L,
                             )
                         }
@@ -169,6 +178,36 @@ class LibraryRepository(private val context: Context) {
             }
         }
         return result
+    }
+
+    private fun readVideoMetadata(uri: Uri): VideoMetadata {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(context, uri)
+            VideoMetadata(
+                durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    ?.toLongOrNull()
+                    ?.coerceAtLeast(0L)
+                    ?: 0L,
+                width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                    ?.toIntOrNull()
+                    ?.coerceAtLeast(0)
+                    ?: 0,
+                height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                    ?.toIntOrNull()
+                    ?.coerceAtLeast(0)
+                    ?: 0,
+                rotationDegrees = normalizeRotation(
+                    retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                        ?.toIntOrNull()
+                        ?: 0,
+                ),
+            )
+        } catch (_: Throwable) {
+            VideoMetadata()
+        } finally {
+            runCatching { retriever.release() }
+        }
     }
 
     private fun isVideoFile(file: DocumentFile): Boolean {
@@ -190,6 +229,13 @@ class LibraryRepository(private val context: Context) {
     private fun android.database.Cursor.intOrZero(index: Int): Int =
         if (index >= 0 && !isNull(index)) getInt(index) else 0
 
+    private data class VideoMetadata(
+        val durationMs: Long = 0L,
+        val width: Int = 0,
+        val height: Int = 0,
+        val rotationDegrees: Int = 0,
+    )
+
     private companion object {
         const val PREFS_NAME = "jianbo_library"
         const val KEY_MANUAL_TREES = "manual_tree_uris"
@@ -204,6 +250,16 @@ class LibraryRepository(private val context: Context) {
 
         val FILE_NAME_COMPARATOR = Comparator<VideoItem> { left, right ->
             compareNaturalFileNames(left.name, right.name)
+        }
+
+        fun normalizeRotation(value: Int): Int {
+            val normalized = ((value % 360) + 360) % 360
+            return when (normalized) {
+                in 45..134 -> 90
+                in 135..224 -> 180
+                in 225..314 -> 270
+                else -> 0
+            }
         }
 
         fun compareNaturalFileNames(left: String, right: String): Int {
