@@ -4,7 +4,6 @@ import android.app.Activity
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.media.AudioManager
-import android.view.ViewGroup
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -57,14 +56,12 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
-import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.AspectRatioFrameLayout
-import androidx.media3.ui.PlayerView
 import com.luxiaoshi.jianbo.data.VideoItem
 import kotlinx.coroutines.delay
+import org.videolan.libvlc.LibVLC
+import org.videolan.libvlc.Media
+import org.videolan.libvlc.MediaPlayer as VlcMediaPlayer
+import org.videolan.libvlc.util.VLCVideoLayout
 import kotlin.math.abs
 
 private val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f)
@@ -77,42 +74,61 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     val context = LocalContext.current
     val activity = context as Activity
     val audio = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
-    val player = remember(videos) {
-        ExoPlayer.Builder(context).build().apply {
-            setMediaItems(videos.map { video ->
-                MediaItem.Builder()
-                    .setUri(video.uri)
-                    .setMediaMetadata(MediaMetadata.Builder().setTitle(video.name).build())
-                    .build()
-            }, startIndex.coerceIn(videos.indices), 0L)
-            prepare()
-            playWhenReady = true
-        }
+    val libVLC = remember {
+        LibVLC(
+            context,
+            arrayListOf(
+                "--audio-time-stretch",
+                "--no-sub-autodetect-file",
+                "--network-caching=300",
+            ),
+        )
     }
+    val player = remember { VlcMediaPlayer(libVLC) }
 
-    var currentIndex by remember { mutableIntStateOf(startIndex.coerceIn(videos.indices)) }
-    var playing by remember { mutableStateOf(true) }
+    val initialIndex = startIndex.coerceIn(videos.indices)
+    var currentIndex by remember { mutableIntStateOf(initialIndex) }
+    var playing by remember { mutableStateOf(false) }
     var controlsVisible by remember { mutableStateOf(true) }
     var speed by remember { mutableFloatStateOf(1f) }
     var speedDialog by remember { mutableStateOf(false) }
     var rotatedQuarterTurn by remember { mutableStateOf(false) }
+    var targetLandscape by remember {
+        mutableStateOf(naturalLandscape(videos.getOrNull(initialIndex)))
+    }
     var overlay by remember { mutableStateOf<String?>(null) }
     var width by remember { mutableIntStateOf(1) }
     var height by remember { mutableIntStateOf(1) }
+    var videoLayout by remember { mutableStateOf<VLCVideoLayout?>(null) }
     val isLandscapeScreen = width > height
+
+    fun loadVideo(index: Int) {
+        val safeIndex = index.coerceIn(videos.indices)
+        val video = videos[safeIndex]
+        currentIndex = safeIndex
+        rotatedQuarterTurn = false
+        targetLandscape = naturalLandscape(video)
+        runCatching { player.stop() }
+        val media = Media(libVLC, video.uri).apply {
+            setHWDecoderEnabled(true, false)
+            addOption(":network-caching=300")
+        }
+        player.setMedia(media)
+        media.release()
+        player.play()
+        controlsVisible = true
+    }
 
     fun playPreviousVideo() {
         if (currentIndex > 0) {
-            player.seekToPreviousMediaItem()
-            player.play()
+            loadVideo(currentIndex - 1)
             overlay = "上一个视频"
         }
     }
 
     fun playNextVideo() {
         if (currentIndex < videos.lastIndex) {
-            player.seekToNextMediaItem()
-            player.play()
+            loadVideo(currentIndex + 1)
             overlay = "下一个视频"
         }
     }
@@ -120,40 +136,60 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     BackHandler(onBack = onExit)
 
     DisposableEffect(player) {
-        val listener = object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) {
-                playing = isPlaying
-            }
+        player.setEventListener { event ->
+            when (event.type) {
+                VlcMediaPlayer.Event.Playing -> {
+                    playing = true
+                    runCatching { player.rate = speed }
+                }
 
-            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                currentIndex = player.currentMediaItemIndex.coerceAtLeast(0)
-                rotatedQuarterTurn = false
+                VlcMediaPlayer.Event.Paused,
+                VlcMediaPlayer.Event.Stopped,
+                VlcMediaPlayer.Event.EndReached,
+                VlcMediaPlayer.Event.EncounteredError,
+                -> {
+                    playing = false
+                    controlsVisible = true
+                }
             }
         }
-        player.addListener(listener)
+
         val controller = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         controller.hide(WindowInsetsCompat.Type.systemBars())
         activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
         onDispose {
-            player.removeListener(listener)
+            runCatching { player.stop() }
+            runCatching { player.detachViews() }
+            player.setEventListener(null)
             player.release()
+            libVLC.release()
             activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             controller.show(WindowInsetsCompat.Type.systemBars())
         }
     }
 
-    LaunchedEffect(currentIndex, rotatedQuarterTurn) {
-        val video = videos.getOrNull(currentIndex)
-        if (video != null) {
-            val naturalLandscape = video.width > video.height
-            val targetLandscape = if (rotatedQuarterTurn) !naturalLandscape else naturalLandscape
-            activity.requestedOrientation = if (targetLandscape) {
-                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-            } else {
-                ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-            }
+    DisposableEffect(videoLayout) {
+        val layout = videoLayout
+        if (layout != null) {
+            player.attachViews(layout, null, true, false)
+        }
+        onDispose {
+            if (layout != null) runCatching { player.detachViews() }
+        }
+    }
+
+    LaunchedEffect(videoLayout) {
+        if (videoLayout != null) loadVideo(currentIndex)
+    }
+
+    LaunchedEffect(targetLandscape) {
+        activity.requestedOrientation = when (targetLandscape) {
+            true -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            false -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            null -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 
@@ -254,19 +290,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                 .fillMaxSize()
                 .rotatePlayerLayout(rotatedQuarterTurn),
             factory = { ctx ->
-                PlayerView(ctx).apply {
-                    this.player = player
-                    useController = false
-                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                    layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                    )
-                }
-            },
-            update = {
-                it.player = player
-                it.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                VLCVideoLayout(ctx).also { videoLayout = it }
             },
         )
 
@@ -327,6 +351,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                     }
                     IconButton(onClick = {
                         rotatedQuarterTurn = !rotatedQuarterTurn
+                        targetLandscape = !isLandscapeScreen
                         controlsVisible = true
                     }) {
                         Icon(Icons.Default.Rotate90DegreesCcw, "横竖方向切换", tint = Color.White)
@@ -342,7 +367,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                 ) {
                     IconButton(
                         onClick = {
-                            player.seekTo((player.currentPosition - SEEK_STEP_MS).coerceAtLeast(0L))
+                            player.time = (player.time - SEEK_STEP_MS).coerceAtLeast(0L)
                             controlsVisible = true
                         },
                         modifier = Modifier.size(58.dp),
@@ -372,8 +397,8 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
 
                     IconButton(
                         onClick = {
-                            val duration = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
-                            player.seekTo((player.currentPosition + SEEK_STEP_MS).coerceAtMost(duration))
+                            val duration = player.length.takeIf { it > 0L } ?: Long.MAX_VALUE
+                            player.time = (player.time + SEEK_STEP_MS).coerceAtMost(duration)
                             controlsVisible = true
                         },
                         modifier = Modifier.size(58.dp),
@@ -422,7 +447,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                                 Button(
                                     onClick = {
                                         speed = value
-                                        player.setPlaybackSpeed(value)
+                                        runCatching { player.rate = value }
                                         speedDialog = false
                                     },
                                     modifier = Modifier.weight(1f),
@@ -440,6 +465,12 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
             },
         )
     }
+}
+
+private fun naturalLandscape(video: VideoItem?): Boolean? = when {
+    video == null -> null
+    video.width > 0 && video.height > 0 -> video.width > video.height
+    else -> null
 }
 
 private fun Modifier.rotatePlayerLayout(rotatedQuarterTurn: Boolean): Modifier {
