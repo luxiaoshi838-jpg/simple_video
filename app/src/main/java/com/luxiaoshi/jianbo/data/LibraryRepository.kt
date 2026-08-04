@@ -10,6 +10,7 @@ import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.ArrayDeque
+import java.util.Locale
 
 class LibraryRepository(private val context: Context) {
     private val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -28,10 +29,7 @@ class LibraryRepository(private val context: Context) {
                 VideoGroup(
                     key = key,
                     name = items.first().folderName,
-                    videos = items.sortedWith(
-                        compareByDescending<VideoItem> { it.dateAddedSeconds }
-                            .thenBy { it.name.lowercase() },
-                    ),
+                    videos = items.sortedWith(FILE_NAME_COMPARATOR),
                     source = source,
                 )
             }
@@ -99,7 +97,7 @@ class LibraryRepository(private val context: Context) {
             projection,
             null,
             null,
-            "${MediaStore.Video.Media.DATE_ADDED} DESC",
+            "${MediaStore.Video.Media.DISPLAY_NAME} COLLATE NOCASE ASC",
         )?.use { cursor ->
             val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
             val nameColumn = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
@@ -186,5 +184,51 @@ class LibraryRepository(private val context: Context) {
         const val PREFS_NAME = "jianbo_library"
         const val KEY_MANUAL_TREES = "manual_tree_uris"
         const val KEY_HIDDEN_GROUPS = "hidden_group_keys"
+
+        val FILE_NAME_COMPARATOR = Comparator<VideoItem> { left, right ->
+            compareNaturalFileNames(left.name, right.name)
+        }
+
+        fun compareNaturalFileNames(left: String, right: String): Int {
+            val a = left.lowercase(Locale.getDefault())
+            val b = right.lowercase(Locale.getDefault())
+            var i = 0
+            var j = 0
+
+            while (i < a.length && j < b.length) {
+                val aDigit = a[i].isDigit()
+                val bDigit = b[j].isDigit()
+
+                if (aDigit && bDigit) {
+                    val aStart = i
+                    val bStart = j
+                    while (i < a.length && a[i].isDigit()) i++
+                    while (j < b.length && b[j].isDigit()) j++
+
+                    val aRaw = a.substring(aStart, i)
+                    val bRaw = b.substring(bStart, j)
+                    val aNumber = aRaw.trimStart('0').ifEmpty { "0" }
+                    val bNumber = bRaw.trimStart('0').ifEmpty { "0" }
+
+                    if (aNumber.length != bNumber.length) {
+                        return aNumber.length.compareTo(bNumber.length)
+                    }
+                    val numberCompare = aNumber.compareTo(bNumber)
+                    if (numberCompare != 0) return numberCompare
+                    if (aRaw.length != bRaw.length) return aRaw.length.compareTo(bRaw.length)
+                } else {
+                    val charCompare = a[i].compareTo(b[j])
+                    if (charCompare != 0) return charCompare
+                    i++
+                    j++
+                }
+            }
+
+            return when {
+                i < a.length -> 1
+                j < b.length -> -1
+                else -> left.compareTo(right)
+            }
+        }
     }
 }
