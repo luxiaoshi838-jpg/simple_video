@@ -46,10 +46,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
@@ -66,6 +68,9 @@ import kotlinx.coroutines.delay
 import kotlin.math.abs
 
 private val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f)
+private const val SEEK_STEP_MS = 5_000L
+
+private enum class VerticalGestureMode { BRIGHTNESS, VIDEO_SWITCH, VOLUME }
 
 @Composable
 fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
@@ -75,30 +80,54 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     val player = remember(videos) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItems(videos.map { video ->
-                MediaItem.Builder().setUri(video.uri)
-                    .setMediaMetadata(MediaMetadata.Builder().setTitle(video.name).build()).build()
+                MediaItem.Builder()
+                    .setUri(video.uri)
+                    .setMediaMetadata(MediaMetadata.Builder().setTitle(video.name).build())
+                    .build()
             }, startIndex.coerceIn(videos.indices), 0L)
             prepare()
             playWhenReady = true
         }
     }
+
     var currentIndex by remember { mutableIntStateOf(startIndex.coerceIn(videos.indices)) }
     var playing by remember { mutableStateOf(true) }
     var controlsVisible by remember { mutableStateOf(true) }
     var speed by remember { mutableFloatStateOf(1f) }
     var speedDialog by remember { mutableStateOf(false) }
-    var rotation by remember { mutableFloatStateOf(0f) }
+    var rotatedQuarterTurn by remember { mutableStateOf(false) }
     var overlay by remember { mutableStateOf<String?>(null) }
     var width by remember { mutableIntStateOf(1) }
     var height by remember { mutableIntStateOf(1) }
-    val isLandscapeFullscreen = width > height
+    val isLandscapeScreen = width > height
+
+    fun playPreviousVideo() {
+        if (currentIndex > 0) {
+            player.seekToPreviousMediaItem()
+            player.play()
+            overlay = "上一个视频"
+        }
+    }
+
+    fun playNextVideo() {
+        if (currentIndex < videos.lastIndex) {
+            player.seekToNextMediaItem()
+            player.play()
+            overlay = "下一个视频"
+        }
+    }
 
     BackHandler(onBack = onExit)
+
     DisposableEffect(player) {
         val listener = object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                playing = isPlaying
+            }
+
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 currentIndex = player.currentMediaItemIndex.coerceAtLeast(0)
+                rotatedQuarterTurn = false
             }
         }
         player.addListener(listener)
@@ -115,20 +144,26 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
         }
     }
 
-    LaunchedEffect(currentIndex) {
+    LaunchedEffect(currentIndex, rotatedQuarterTurn) {
         val video = videos.getOrNull(currentIndex)
-        activity.requestedOrientation = if (video != null && video.width > video.height) {
-            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        } else {
-            ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+        if (video != null) {
+            val naturalLandscape = video.width > video.height
+            val targetLandscape = if (rotatedQuarterTurn) !naturalLandscape else naturalLandscape
+            activity.requestedOrientation = if (targetLandscape) {
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            } else {
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            }
         }
     }
+
     LaunchedEffect(playing, controlsVisible) {
         if (playing && controlsVisible) {
             delay(2500)
             controlsVisible = false
         }
     }
+
     LaunchedEffect(overlay) {
         if (overlay != null) {
             delay(700)
@@ -137,68 +172,87 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     }
 
     Box(
-        modifier = Modifier.fillMaxSize().background(Color.Black)
-            .onSizeChanged { width = it.width.coerceAtLeast(1); height = it.height.coerceAtLeast(1) }
-            .pointerInput(width, height) {
-                var gestureEnabled = false
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .onSizeChanged {
+                width = it.width.coerceAtLeast(1)
+                height = it.height.coerceAtLeast(1)
+            }
+            .pointerInput(width, height, currentIndex) {
+                var gestureMode = VerticalGestureMode.VIDEO_SWITCH
                 var startBrightness = 0.5f
                 var startVolume = 0
-                var onLeft = false
                 var totalY = 0f
+
                 detectDragGestures(
-                    onDragStart = { p ->
-                        gestureEnabled = width > height
-                        if (gestureEnabled) {
-                            onLeft = p.x < width / 2f
-                            totalY = 0f
-                            startBrightness = activity.window.attributes.screenBrightness
-                                .takeIf { it >= 0f }
-                                ?: 0.5f
-                            startVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+                    onDragStart = { point ->
+                        totalY = 0f
+                        gestureMode = if (!isLandscapeScreen) {
+                            VerticalGestureMode.VIDEO_SWITCH
+                        } else {
+                            when {
+                                point.x < width * 0.30f -> VerticalGestureMode.BRIGHTNESS
+                                point.x > width * 0.70f -> VerticalGestureMode.VOLUME
+                                else -> VerticalGestureMode.VIDEO_SWITCH
+                            }
                         }
+
+                        startBrightness = activity.window.attributes.screenBrightness
+                            .takeIf { it >= 0f }
+                            ?: 0.5f
+                        startVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
                     },
-                    onDrag = { change, drag ->
-                        if (gestureEnabled) {
-                            change.consume()
-                            totalY += drag.y
-                            val ratio = (-totalY / height).coerceIn(-1f, 1f)
-                            if (onLeft) {
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        totalY += dragAmount.y
+                        val ratio = (-totalY / height).coerceIn(-1f, 1f)
+                        when (gestureMode) {
+                            VerticalGestureMode.BRIGHTNESS -> {
                                 val value = (startBrightness + ratio).coerceIn(0.01f, 1f)
                                 val params = activity.window.attributes
                                 params.screenBrightness = value
                                 activity.window.attributes = params
                                 overlay = "亮度 ${(value * 100).toInt()}%"
-                            } else {
+                            }
+
+                            VerticalGestureMode.VOLUME -> {
                                 val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                                 val value = (startVolume + ratio * max).toInt().coerceIn(0, max)
                                 audio.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0)
                                 overlay = "音量 ${(value * 100f / max).toInt()}%"
                             }
+
+                            VerticalGestureMode.VIDEO_SWITCH -> Unit
                         }
                     },
-                    onDragEnd = { gestureEnabled = false },
-                    onDragCancel = { gestureEnabled = false },
+                    onDragEnd = {
+                        if (gestureMode == VerticalGestureMode.VIDEO_SWITCH && abs(totalY) >= height * 0.12f) {
+                            if (totalY < 0f) playNextVideo() else playPreviousVideo()
+                        }
+                    },
+                    onDragCancel = { totalY = 0f },
                 )
             }
-            .pointerInput(playing) {
+            .pointerInput(playing, controlsVisible, width, height) {
                 detectTapGestures(
-                    onTap = { controlsVisible = !controlsVisible },
-                    onDoubleTap = { p ->
-                        if (p.x in width * 0.25f..width * 0.75f && p.y in height * 0.2f..height * 0.8f) {
-                            if (player.isPlaying) player.pause() else player.play()
+                    onTap = { point ->
+                        val inCenter = point.x in width * 0.25f..width * 0.75f &&
+                            point.y in height * 0.20f..height * 0.80f
+                        if (inCenter && player.isPlaying) {
+                            player.pause()
                             controlsVisible = true
+                        } else if (!inCenter) {
+                            controlsVisible = !controlsVisible
                         }
                     },
                 )
             },
     ) {
         AndroidView(
-            modifier = Modifier.fillMaxSize().graphicsLayer {
-                rotationZ = rotation
-                val reduced = abs(rotation % 180f) == 90f
-                scaleX = if (reduced) 0.62f else 1f
-                scaleY = if (reduced) 0.62f else 1f
-            },
+            modifier = Modifier
+                .fillMaxSize()
+                .rotatePlayerLayout(rotatedQuarterTurn),
             factory = { ctx ->
                 PlayerView(ctx).apply {
                     this.player = player
@@ -210,7 +264,10 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                     )
                 }
             },
-            update = { it.player = player },
+            update = {
+                it.player = player
+                it.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+            },
         )
 
         overlay?.let {
@@ -219,14 +276,41 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                 shape = MaterialTheme.shapes.medium,
                 modifier = Modifier.align(Alignment.Center),
             ) {
-                Text(it, color = Color.White, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
+                Text(
+                    it,
+                    color = Color.White,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                )
+            }
+        }
+
+        if (!playing) {
+            IconButton(
+                onClick = {
+                    player.play()
+                    controlsVisible = true
+                },
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(92.dp)
+                    .background(Color.Black.copy(alpha = 0.55f), MaterialTheme.shapes.extraLarge),
+            ) {
+                Icon(
+                    Icons.Default.PlayArrow,
+                    contentDescription = "继续播放",
+                    tint = Color.White,
+                    modifier = Modifier.size(68.dp),
+                )
             }
         }
 
         if (controlsVisible) {
-            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.25f))) {
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.20f))) {
                 Row(
-                    Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(12.dp),
+                    Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter)
+                        .padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     IconButton(onClick = onExit) {
@@ -242,31 +326,40 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                         Text("${speedText(speed)}×", color = Color.White)
                     }
                     IconButton(onClick = {
-                        rotation = (rotation + 90f) % 360f
+                        rotatedQuarterTurn = !rotatedQuarterTurn
                         controlsVisible = true
                     }) {
-                        Icon(Icons.Default.Rotate90DegreesCcw, "翻转视频", tint = Color.White)
+                        Icon(Icons.Default.Rotate90DegreesCcw, "横竖方向切换", tint = Color.White)
                     }
                 }
+
                 Row(
-                    Modifier.align(Alignment.Center),
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 54.dp),
                     horizontalArrangement = Arrangement.spacedBy(28.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     IconButton(
-                        enabled = currentIndex > 0,
-                        onClick = { player.seekToPreviousMediaItem(); player.play() },
+                        onClick = {
+                            player.seekTo((player.currentPosition - SEEK_STEP_MS).coerceAtLeast(0L))
+                            controlsVisible = true
+                        },
                         modifier = Modifier.size(58.dp),
                     ) {
                         Icon(
                             Icons.Default.FastRewind,
-                            "上一个",
-                            tint = if (currentIndex > 0) Color.White else Color.Gray,
+                            "后退五秒",
+                            tint = Color.White,
                             modifier = Modifier.size(42.dp),
                         )
                     }
+
                     IconButton(
-                        onClick = { if (player.isPlaying) player.pause() else player.play() },
+                        onClick = {
+                            if (player.isPlaying) player.pause() else player.play()
+                            controlsVisible = true
+                        },
                         modifier = Modifier.size(72.dp),
                     ) {
                         Icon(
@@ -276,28 +369,36 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                             modifier = Modifier.size(56.dp),
                         )
                     }
+
                     IconButton(
-                        enabled = currentIndex < videos.lastIndex,
-                        onClick = { player.seekToNextMediaItem(); player.play() },
+                        onClick = {
+                            val duration = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
+                            player.seekTo((player.currentPosition + SEEK_STEP_MS).coerceAtMost(duration))
+                            controlsVisible = true
+                        },
                         modifier = Modifier.size(58.dp),
                     ) {
                         Icon(
                             Icons.Default.FastForward,
-                            "下一个",
-                            tint = if (currentIndex < videos.lastIndex) Color.White else Color.Gray,
+                            "前进五秒",
+                            tint = Color.White,
                             modifier = Modifier.size(42.dp),
                         )
                     }
                 }
+
                 Column(
-                    Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(18.dp),
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(18.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(
-                        if (isLandscapeFullscreen) {
-                            "左侧上下滑动调亮度 · 右侧上下滑动调音量 · 中央双击暂停"
+                        if (isLandscapeScreen) {
+                            "左侧调亮度 · 中间上下滑切换视频 · 右侧调音量"
                         } else {
-                            "竖屏不启用亮度/音量侧滑 · 中央双击暂停"
+                            "竖向屏上下滑切换视频"
                         },
                         color = Color.White,
                     )
@@ -306,30 +407,57 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
         }
     }
 
-    if (speedDialog) AlertDialog(
-        onDismissRequest = { speedDialog = false },
-        title = { Text("播放速度") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                SPEEDS.chunked(3).forEach { row ->
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        row.forEach { value ->
-                            Button(
-                                onClick = {
-                                    speed = value
-                                    player.setPlaybackSpeed(value)
-                                    speedDialog = false
-                                },
-                                modifier = Modifier.weight(1f),
-                            ) { Text("${speedText(value)}×") }
+    if (speedDialog) {
+        AlertDialog(
+            onDismissRequest = { speedDialog = false },
+            title = { Text("播放速度") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SPEEDS.chunked(3).forEach { row ->
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            row.forEach { value ->
+                                Button(
+                                    onClick = {
+                                        speed = value
+                                        player.setPlaybackSpeed(value)
+                                        speedDialog = false
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Text("${speedText(value)}×")
+                                }
+                            }
+                            repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
                         }
-                        repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
                     }
                 }
+            },
+            confirmButton = {
+                TextButton(onClick = { speedDialog = false }) { Text("关闭") }
+            },
+        )
+    }
+}
+
+private fun Modifier.rotatePlayerLayout(rotatedQuarterTurn: Boolean): Modifier {
+    if (!rotatedQuarterTurn) return this
+    return layout { measurable, constraints ->
+        val outerWidth = constraints.maxWidth
+        val outerHeight = constraints.maxHeight
+        val child = measurable.measure(Constraints.fixed(outerHeight, outerWidth))
+        layout(outerWidth, outerHeight) {
+            child.placeWithLayer(
+                x = (outerWidth - outerHeight) / 2,
+                y = (outerHeight - outerWidth) / 2,
+            ) {
+                rotationZ = 90f
+                transformOrigin = TransformOrigin.Center
             }
-        },
-        confirmButton = { TextButton(onClick = { speedDialog = false }) { Text("关闭") } },
-    )
+        }
+    }
 }
 
 private fun speedText(speed: Float): String =
