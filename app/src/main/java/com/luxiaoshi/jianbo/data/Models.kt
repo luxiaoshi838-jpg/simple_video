@@ -11,6 +11,7 @@ data class VideoItem(
     val durationMs: Long = 0L,
     val width: Int = 0,
     val height: Int = 0,
+    val rotationDegrees: Int = 0,
     val dateAddedSeconds: Long = 0L,
 )
 
