@@ -144,7 +144,7 @@ class LibraryRepository(private val context: Context) {
     private fun queryManualTrees(): List<VideoItem> {
         val result = mutableListOf<VideoItem>()
         for (treeString in manualTreeUris()) {
-            val treeUri = runCatching(Uri::parse).getOrNull() ?: continue
+            val treeUri = runCatching { Uri.parse(treeString) }.getOrNull() ?: continue
             val root = DocumentFile.fromTreeUri(context, treeUri) ?: continue
             val queue = ArrayDeque<DocumentFile>()
             queue.add(root)
