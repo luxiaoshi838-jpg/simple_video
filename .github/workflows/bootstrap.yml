@@ -1,12 +1,8 @@
 name: Generate project sources
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.bootstrap-payload/**'
-      - 'bootstrap_project.py'
-      - '.github/workflows/bootstrap.yml'
+  issues:
+    types: [opened]
   workflow_dispatch:
 
 permissions:
@@ -14,9 +10,12 @@ permissions:
 
 jobs:
   generate:
+    if: github.event_name == 'workflow_dispatch' || github.event.issue.title == '[bootstrap] generate jianbo sources'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
       - name: Generate Android project
         run: python3 bootstrap_project.py
       - name: Commit generated sources
@@ -28,5 +27,5 @@ jobs:
             echo "No generated changes"
           else
             git commit -m "生成简播 Android 项目"
-            git push
+            git push origin main
           fi
