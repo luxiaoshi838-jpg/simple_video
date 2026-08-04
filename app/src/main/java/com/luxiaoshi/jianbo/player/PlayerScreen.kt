@@ -92,6 +92,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     var overlay by remember { mutableStateOf<String?>(null) }
     var width by remember { mutableIntStateOf(1) }
     var height by remember { mutableIntStateOf(1) }
+    val isLandscapeFullscreen = width > height
 
     BackHandler(onBack = onExit)
     DisposableEffect(player) {
@@ -139,35 +140,45 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     Box(
         modifier = Modifier.fillMaxSize().background(Color.Black)
             .onSizeChanged { width = it.width.coerceAtLeast(1); height = it.height.coerceAtLeast(1) }
-            .pointerInput(Unit) {
+            .pointerInput(width, height) {
+                var gestureEnabled = false
                 var startBrightness = 0.5f
                 var startVolume = 0
                 var onLeft = false
                 var totalY = 0f
                 detectDragGestures(
                     onDragStart = { p ->
-                        onLeft = p.x < width / 2f
-                        totalY = 0f
-                        startBrightness = activity.window.attributes.screenBrightness.takeIf { it >= 0f } ?: 0.5f
-                        startVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
-                    },
-                    onDrag = { change, drag ->
-                        change.consume()
-                        totalY += drag.y
-                        val ratio = (-totalY / height).coerceIn(-1f, 1f)
-                        if (onLeft) {
-                            val value = (startBrightness + ratio).coerceIn(0.01f, 1f)
-                            val params = activity.window.attributes
-                            params.screenBrightness = value
-                            activity.window.attributes = params
-                            overlay = "亮度 ${(value * 100).toInt()}%"
-                        } else {
-                            val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                            val value = (startVolume + ratio * max).toInt().coerceIn(0, max)
-                            audio.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0)
-                            overlay = "音量 ${(value * 100f / max).toInt()}%"
+                        gestureEnabled = width > height
+                        if (gestureEnabled) {
+                            onLeft = p.x < width / 2f
+                            totalY = 0f
+                            startBrightness = activity.window.attributes.screenBrightness
+                                .takeIf { it >= 0f }
+                                ?: 0.5f
+                            startVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
                         }
                     },
+                    onDrag = { change, drag ->
+                        if (gestureEnabled) {
+                            change.consume()
+                            totalY += drag.y
+                            val ratio = (-totalY / height).coerceIn(-1f, 1f)
+                            if (onLeft) {
+                                val value = (startBrightness + ratio).coerceIn(0.01f, 1f)
+                                val params = activity.window.attributes
+                                params.screenBrightness = value
+                                activity.window.attributes = params
+                                overlay = "亮度 ${(value * 100).toInt()}%"
+                            } else {
+                                val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                                val value = (startVolume + ratio * max).toInt().coerceIn(0, max)
+                                audio.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0)
+                                overlay = "音量 ${(value * 100f / max).toInt()}%"
+                            }
+                        }
+                    },
+                    onDragEnd = { gestureEnabled = false },
+                    onDragCancel = { gestureEnabled = false },
                 )
             }
             .pointerInput(playing) {
@@ -283,7 +294,14 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                     Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(18.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text("左侧上下滑动调亮度 · 右侧上下滑动调音量 · 中央双击暂停", color = Color.White)
+                    Text(
+                        if (isLandscapeFullscreen) {
+                            "左侧上下滑动调亮度 · 右侧上下滑动调音量 · 中央双击暂停"
+                        } else {
+                            "竖屏不启用亮度/音量侧滑 · 中央双击暂停"
+                        },
+                        color = Color.White,
+                    )
                 }
             }
         }
