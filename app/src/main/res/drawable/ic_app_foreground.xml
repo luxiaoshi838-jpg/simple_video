@@ -4,17 +4,14 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
     <path
-        android:fillColor="#0798F5"
-        android:pathData="M18,4H90A14,14 0,0 1,104 18V90A14,14 0,0 1,90 104H18A14,14 0,0 1,4 90V18A14,14 0,0 1,18 4Z" />
-    <path
         android:fillColor="#1645B8"
-        android:pathData="M54,16A36,36 0,1 1,54 88A36,36 0,1 1,54 16Z" />
+        android:pathData="M54,17A35,35 0,1 1,54 87A35,35 0,1 1,54 17Z" />
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M43,30L43,72L77,51Z" />
+        android:pathData="M43,31L43,71L76,51Z" />
     <group
-        android:pivotX="80"
-        android:pivotY="81"
+        android:pivotX="79"
+        android:pivotY="80"
         android:rotation="-42">
         <path
             android:fillColor="#F4C542"
