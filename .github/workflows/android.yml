@@ -30,6 +30,21 @@ jobs:
       - name: Install Android API 36
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
+      - name: Package Android signing tools
+        run: |
+          mkdir -p apksigner-tool/lib
+          cp "$ANDROID_HOME/build-tools/36.0.0/apksigner" apksigner-tool/
+          cp "$ANDROID_HOME/build-tools/36.0.0/zipalign" apksigner-tool/
+          cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" apksigner-tool/lib/
+          chmod +x apksigner-tool/apksigner apksigner-tool/zipalign
+
+      - name: Upload Android signing tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apksigner-tool
+          path: apksigner-tool
+          if-no-files-found: error
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
