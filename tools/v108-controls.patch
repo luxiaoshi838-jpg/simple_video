@@ -1,0 +1,186 @@
+diff --git a/app/src/main/java/com/luxiaoshi/jianbo/player/PlayerScreen.kt b/app/src/main/java/com/luxiaoshi/jianbo/player/PlayerScreen.kt
+--- a/app/src/main/java/com/luxiaoshi/jianbo/player/PlayerScreen.kt
++++ b/app/src/main/java/com/luxiaoshi/jianbo/player/PlayerScreen.kt
+@@ -87,6 +87,10 @@ import kotlin.math.abs
+ 
+ private val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f)
+ private const val SEEK_STEP_MS = 5_000L
++private const val CONTROLS_HIDE_DELAY_MS = 5_000L
++private const val CENTER_TAP_MIN_X = 0.38f
++private const val CENTER_TAP_MAX_X = 0.62f
++private const val CENTER_TAP_MIN_Y = 0.35f
++private const val CENTER_TAP_MAX_Y = 0.65f
+ 
+ private val VLC_PREFERRED_EXTENSIONS = setOf(
+     "amv", "asf", "avi", "divx", "dv", "flv", "mxf", "ogm", "rm", "rmvb", "vob", "wmv",
+@@ -148,8 +152,15 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
+     var isSeeking by remember { mutableStateOf(false) }
+     var seekPreviewMs by remember { mutableLongStateOf(0L) }
+     var resumeAfterForeground by remember { mutableStateOf(false) }
++    var controlsInteractionTick by remember { mutableLongStateOf(0L) }
+     val isLandscapeScreen = width > height
+ 
++    fun showControlsForInteraction() {
++        controlsVisible = true
++        controlsInteractionTick += 1L
++    }
++
+     fun selectVideo(index: Int) {
+         val safeIndex = index.coerceIn(videos.indices)
+         val video = videos[safeIndex]
+@@ -162,7 +173,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
+         isSeeking = false
+         targetLandscape = naturalLandscape(video)
+         playing = false
+-        controlsVisible = true
++        showControlsForInteraction()
+     }
+ 
+     fun playPreviousVideo() {
+@@ -181,7 +192,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
+             overlay = if (manual) "下一个视频" else "自动播放下一个"
+         } else {
+             playing = false
+-            controlsVisible = true
++            showControlsForInteraction()
+             if (!manual) overlay = "已经播放到最后一个视频"
+         }
+     }
+@@ -207,7 +218,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
+             PlaybackBackend.MEDIA3 -> exoPlayer.pause()
+             PlaybackBackend.VLC -> vlcPlayer.pause()
+         }
+-        if (showControls) controlsVisible = true
++        if (showControls) showControlsForInteraction()
+     }
+ 
+     fun resumePlayback() {
+@@ -215,7 +226,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
+             PlaybackBackend.MEDIA3 -> exoPlayer.play()
+             PlaybackBackend.VLC -> vlcPlayer.play()
+         }
+-        controlsVisible = true
++        showControlsForInteraction()
+     }
+ 
+     fun seekTo(targetMs: Long) {
+@@ -233,7 +244,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
+             PlaybackBackend.VLC -> vlcPlayer.time = safeTarget
+         }
+         positionMs = safeTarget
+-        controlsVisible = true
++        showControlsForInteraction()
+     }
+ 
+     fun seekRelative(deltaMs: Long) {
+@@ -390,10 +401,10 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
+         }
+     }
+ 
+-    LaunchedEffect(playing, controlsVisible) {
+-        if (playing && controlsVisible && !isSeeking) {
+-            delay(2500)
++    LaunchedEffect(controlsVisible, controlsInteractionTick, isSeeking, speedDialog) {
++        if (controlsVisible && !isSeeking && !speedDialog) {
++            delay(CONTROLS_HIDE_DELAY_MS)
+             controlsVisible = false
+         }
+     }
+@@ -423,6 +434,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
+ 
+                 detectDragGestures(
+                     onDragStart = { point ->
++                        showControlsForInteraction()
+                         totalY = 0f
+                         gestureMode = if (!isLandscapeScreen) {
+                             VerticalGestureMode.VIDEO_SWITCH
+@@ -444,6 +456,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
+                     },
+                     onDrag = { change, dragAmount ->
+                         change.consume()
++                        showControlsForInteraction()
+                         totalY += dragAmount.y
+                         val ratio = (-totalY / height).coerceIn(-1f, 1f)
+                         when (gestureMode) {
+@@ -479,13 +492,16 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
+             .pointerInput(playing, controlsVisible, width, height, backend) {
+                 detectTapGestures(
+                     onTap = { point ->
+-                        val inCenter = point.x in width * 0.25f..width * 0.75f &&
+-                            point.y in height * 0.20f..height * 0.80f
+-                        if (inCenter && isPlayingNow()) {
+-                            pausePlayback()
+-                        } else if (!inCenter) {
+-                            controlsVisible = !controlsVisible
++                        val inCenter = point.x in width * CENTER_TAP_MIN_X..width * CENTER_TAP_MAX_X &&
++                            point.y in height * CENTER_TAP_MIN_Y..height * CENTER_TAP_MAX_Y
++                        if (inCenter) {
++                            if (isPlayingNow()) pausePlayback() else resumePlayback()
++                        } else {
++                            // 点击只能唤出并延长显示时间，不能主动隐藏控制栏。
++                            showControlsForInteraction()
+                         }
+                     },
+                 )
+@@ -570,12 +586,15 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
+                         overflow = TextOverflow.Ellipsis,
+                         modifier = Modifier.weight(1f),
+                     )
+-                    TextButton(onClick = { speedDialog = true }) {
++                    TextButton(onClick = {
++                        showControlsForInteraction()
++                        speedDialog = true
++                    }) {
+                         Text("${speedText(speed)}×", color = Color.White)
+                     }
+                     IconButton(onClick = {
+                         targetLandscape = !isLandscapeScreen
+-                        controlsVisible = true
++                        showControlsForInteraction()
+                     }) {
+                         Icon(Icons.Default.Rotate90DegreesCcw, "横竖方向切换", tint = Color.White)
+                     }
+@@ -600,7 +619,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
+                         onValueChange = { value ->
+                             isSeeking = true
+                             seekPreviewMs = value
+-                            controlsVisible = true
++                            showControlsForInteraction()
+                         },
+                         onValueChangeFinished = {
+                             seekTo(seekPreviewMs)
+@@ -669,7 +688,10 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
+     }
+ 
+     if (speedDialog) {
+         AlertDialog(
+-            onDismissRequest = { speedDialog = false },
++            onDismissRequest = {
++                speedDialog = false
++                showControlsForInteraction()
++            },
+             title = { Text("播放速度") },
+             text = {
+                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+@@ -690,6 +712,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
+                                             PlaybackBackend.VLC -> runCatching { vlcPlayer.rate = value }
+                                         }
+                                         speedDialog = false
++                                        showControlsForInteraction()
+                                     },
+                                     modifier = Modifier.weight(1f),
+                                 ) {
+@@ -702,7 +725,12 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
+                 }
+             },
+             confirmButton = {
+-                TextButton(onClick = { speedDialog = false }) { Text("关闭") }
++                TextButton(onClick = {
++                    speedDialog = false
++                    showControlsForInteraction()
++                }) {
++                    Text("关闭")
++                }
+             },
+         )
+     }
