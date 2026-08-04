@@ -1,7 +1,7 @@
 package com.luxiaoshi.jianbo
 
 import android.Manifest
-import android.media.MediaMetadataRetriever
+import android.graphics.Bitmap
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -65,7 +65,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -77,10 +76,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.luxiaoshi.jianbo.data.LibraryUiState
 import com.luxiaoshi.jianbo.data.VideoGroup
 import com.luxiaoshi.jianbo.data.VideoItem
+import com.luxiaoshi.jianbo.data.VideoThumbnailCache
 import com.luxiaoshi.jianbo.player.PlayerScreen
 import com.luxiaoshi.jianbo.ui.theme.JianboTheme
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private val viewModel: LibraryViewModel by viewModels()
@@ -285,21 +283,13 @@ private fun GroupScreen(group: VideoGroup, onBack: () -> Unit, play: (Int) -> Un
 @Composable
 private fun VideoThumbnail(video: VideoItem) {
     val context = LocalContext.current
-    val frame by produceState<ImageBitmap?>(initialValue = null, key1 = video.id) {
-        value = withContext(Dispatchers.IO) {
-            val retriever = MediaMetadataRetriever()
-            try {
-                retriever.setDataSource(context, video.uri)
-                retriever.getFrameAtTime(
-                    1_000_000L,
-                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                )?.asImageBitmap()
-            } catch (_: Throwable) {
-                null
-            } finally {
-                runCatching { retriever.release() }
-            }
-        }
+    val frame by produceState<Bitmap?>(
+        initialValue = VideoThumbnailCache.peek(video),
+        key1 = video.id,
+        key2 = video.dateAddedSeconds,
+        key3 = video.durationMs,
+    ) {
+        value = VideoThumbnailCache.load(context.applicationContext, video)
     }
 
     Box(
@@ -311,7 +301,7 @@ private fun VideoThumbnail(video: VideoItem) {
     ) {
         if (frame != null) {
             Image(
-                bitmap = requireNotNull(frame),
+                bitmap = requireNotNull(frame).asImageBitmap(),
                 contentDescription = "${video.name}预览图",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
