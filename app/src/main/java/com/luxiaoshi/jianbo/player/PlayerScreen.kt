@@ -31,6 +31,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -40,18 +41,16 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
@@ -113,7 +112,6 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     var controlsVisible by remember { mutableStateOf(true) }
     var speed by remember { mutableFloatStateOf(1f) }
     var speedDialog by remember { mutableStateOf(false) }
-    var rotatedQuarterTurn by remember { mutableStateOf(false) }
     var targetLandscape by remember {
         mutableStateOf(naturalLandscape(videos.getOrNull(initialIndex)))
     }
@@ -121,7 +119,11 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     var width by remember { mutableIntStateOf(1) }
     var height by remember { mutableIntStateOf(1) }
     var vlcVideoLayout by remember { mutableStateOf<VLCVideoLayout?>(null) }
-    var fallbackPositionMs by remember { mutableStateOf(0L) }
+    var fallbackPositionMs by remember { mutableLongStateOf(0L) }
+    var positionMs by remember { mutableLongStateOf(0L) }
+    var durationMs by remember { mutableLongStateOf(0L) }
+    var isSeeking by remember { mutableStateOf(false) }
+    var seekPreviewMs by remember { mutableLongStateOf(0L) }
     val isLandscapeScreen = width > height
 
     fun selectVideo(index: Int) {
@@ -130,7 +132,9 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
         currentIndex = safeIndex
         backend = preferredBackend(video)
         fallbackPositionMs = 0L
-        rotatedQuarterTurn = false
+        positionMs = 0L
+        durationMs = video.durationMs.coerceAtLeast(0L)
+        isSeeking = false
         targetLandscape = naturalLandscape(video)
         playing = false
         controlsVisible = true
@@ -143,16 +147,30 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
         }
     }
 
-    fun playNextVideo() {
+    fun playNextVideo(manual: Boolean = true) {
         if (currentIndex < videos.lastIndex) {
             selectVideo(currentIndex + 1)
-            overlay = "下一个视频"
+            overlay = if (manual) "下一个视频" else "自动播放下一个"
+        } else {
+            playing = false
+            controlsVisible = true
+            if (!manual) overlay = "已经播放到最后一个视频"
         }
     }
 
     fun isPlayingNow(): Boolean = when (backend) {
         PlaybackBackend.MEDIA3 -> exoPlayer.isPlaying
         PlaybackBackend.VLC -> vlcPlayer.isPlaying
+    }
+
+    fun currentPosition(): Long = when (backend) {
+        PlaybackBackend.MEDIA3 -> exoPlayer.currentPosition.coerceAtLeast(0L)
+        PlaybackBackend.VLC -> vlcPlayer.time.coerceAtLeast(0L)
+    }
+
+    fun currentDuration(): Long = when (backend) {
+        PlaybackBackend.MEDIA3 -> exoPlayer.duration.takeIf { it > 0L } ?: 0L
+        PlaybackBackend.VLC -> vlcPlayer.length.takeIf { it > 0L } ?: 0L
     }
 
     fun pausePlayback() {
@@ -171,33 +189,42 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
         controlsVisible = true
     }
 
-    fun seekRelative(deltaMs: Long) {
-        when (backend) {
-            PlaybackBackend.MEDIA3 -> {
-                val duration = exoPlayer.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
-                exoPlayer.seekTo((exoPlayer.currentPosition + deltaMs).coerceIn(0L, duration))
-            }
-
-            PlaybackBackend.VLC -> {
-                val duration = vlcPlayer.length.takeIf { it > 0L } ?: Long.MAX_VALUE
-                vlcPlayer.time = (vlcPlayer.time + deltaMs).coerceIn(0L, duration)
-            }
+    fun seekTo(targetMs: Long) {
+        val knownDuration = currentDuration().takeIf { it > 0L } ?: durationMs
+        val safeTarget = if (knownDuration > 0L) {
+            targetMs.coerceIn(0L, knownDuration)
+        } else {
+            targetMs.coerceAtLeast(0L)
         }
+        when (backend) {
+            PlaybackBackend.MEDIA3 -> exoPlayer.seekTo(safeTarget)
+            PlaybackBackend.VLC -> vlcPlayer.time = safeTarget
+        }
+        positionMs = safeTarget
         controlsVisible = true
+    }
+
+    fun seekRelative(deltaMs: Long) {
+        seekTo(currentPosition() + deltaMs)
     }
 
     BackHandler(onBack = onExit)
 
-    DisposableEffect(exoPlayer, backend) {
+    DisposableEffect(exoPlayer, backend, currentIndex) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (backend == PlaybackBackend.MEDIA3) playing = isPlaying
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (backend == PlaybackBackend.MEDIA3 && playbackState == Player.STATE_ENDED) {
-                    playing = false
-                    controlsVisible = true
+                if (backend != PlaybackBackend.MEDIA3) return
+                when (playbackState) {
+                    Player.STATE_READY -> {
+                        val playerDuration = exoPlayer.duration
+                        if (playerDuration > 0L) durationMs = playerDuration
+                    }
+
+                    Player.STATE_ENDED -> playNextVideo(manual = false)
                 }
             }
 
@@ -215,13 +242,15 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
         onDispose { exoPlayer.removeListener(listener) }
     }
 
-    DisposableEffect(vlcPlayer, backend, speed) {
+    DisposableEffect(vlcPlayer, backend, speed, currentIndex) {
         vlcPlayer.setEventListener { event ->
             if (backend != PlaybackBackend.VLC) return@setEventListener
             when (event.type) {
                 VlcMediaPlayer.Event.Playing -> {
                     playing = true
                     runCatching { vlcPlayer.rate = speed }
+                    runCatching { vlcPlayer.setScale(0f) }
+                    runCatching { vlcPlayer.setAspectRatio(null) }
                     if (fallbackPositionMs > 0L) {
                         vlcPlayer.time = fallbackPositionMs
                         fallbackPositionMs = 0L
@@ -230,11 +259,12 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
 
                 VlcMediaPlayer.Event.Paused,
                 VlcMediaPlayer.Event.Stopped,
-                VlcMediaPlayer.Event.EndReached,
                 -> {
                     playing = false
                     controlsVisible = true
                 }
+
+                VlcMediaPlayer.Event.EndReached -> playNextVideo(manual = false)
 
                 VlcMediaPlayer.Event.EncounteredError -> {
                     playing = false
@@ -270,6 +300,8 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
         if (backend == PlaybackBackend.VLC && layout != null) {
             runCatching { vlcPlayer.detachViews() }
             vlcPlayer.attachViews(layout, null, true, false)
+            runCatching { vlcPlayer.setScale(0f) }
+            runCatching { vlcPlayer.setAspectRatio(null) }
         }
         onDispose {
             if (layout != null) runCatching { vlcPlayer.detachViews() }
@@ -279,6 +311,8 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     LaunchedEffect(currentIndex, backend, vlcVideoLayout) {
         val video = videos.getOrNull(currentIndex) ?: return@LaunchedEffect
         playing = false
+        positionMs = 0L
+        durationMs = video.durationMs.coerceAtLeast(0L)
 
         when (backend) {
             PlaybackBackend.MEDIA3 -> {
@@ -314,8 +348,17 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
         }
     }
 
+    LaunchedEffect(currentIndex, backend, playing, isSeeking) {
+        while (true) {
+            val detectedDuration = currentDuration()
+            if (detectedDuration > 0L) durationMs = detectedDuration
+            if (!isSeeking) positionMs = currentPosition()
+            delay(if (playing) 250L else 500L)
+        }
+    }
+
     LaunchedEffect(playing, controlsVisible) {
-        if (playing && controlsVisible) {
+        if (playing && controlsVisible && !isSeeking) {
             delay(2500)
             controlsVisible = false
         }
@@ -408,9 +451,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
         when (backend) {
             PlaybackBackend.MEDIA3 -> {
                 AndroidView(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .rotatePlayerLayout(rotatedQuarterTurn),
+                    modifier = Modifier.fillMaxSize(),
                     factory = { ctx ->
                         PlayerView(ctx).apply {
                             layoutParams = ViewGroup.LayoutParams(
@@ -423,15 +464,16 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                             setShutterBackgroundColor(android.graphics.Color.BLACK)
                         }
                     },
-                    update = { view -> view.player = exoPlayer },
+                    update = { view ->
+                        view.player = exoPlayer
+                        view.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    },
                 )
             }
 
             PlaybackBackend.VLC -> {
                 AndroidView(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .rotatePlayerLayout(rotatedQuarterTurn),
+                    modifier = Modifier.fillMaxSize(),
                     factory = { ctx ->
                         VLCVideoLayout(ctx).also { vlcVideoLayout = it }
                     },
@@ -492,7 +534,6 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                         Text("${speedText(speed)}×", color = Color.White)
                     }
                     IconButton(onClick = {
-                        rotatedQuarterTurn = !rotatedQuarterTurn
                         targetLandscape = !isLandscapeScreen
                         controlsVisible = true
                     }) {
@@ -500,59 +541,79 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                     }
                 }
 
-                Row(
-                    Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 54.dp),
-                    horizontalArrangement = Arrangement.spacedBy(28.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(
-                        onClick = { seekRelative(-SEEK_STEP_MS) },
-                        modifier = Modifier.size(58.dp),
-                    ) {
-                        Icon(
-                            Icons.Default.FastRewind,
-                            "后退五秒",
-                            tint = Color.White,
-                            modifier = Modifier.size(42.dp),
-                        )
-                    }
-
-                    IconButton(
-                        onClick = {
-                            if (isPlayingNow()) pausePlayback() else resumePlayback()
-                        },
-                        modifier = Modifier.size(72.dp),
-                    ) {
-                        Icon(
-                            if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            "播放或暂停",
-                            tint = Color.White,
-                            modifier = Modifier.size(56.dp),
-                        )
-                    }
-
-                    IconButton(
-                        onClick = { seekRelative(SEEK_STEP_MS) },
-                        modifier = Modifier.size(58.dp),
-                    ) {
-                        Icon(
-                            Icons.Default.FastForward,
-                            "前进五秒",
-                            tint = Color.White,
-                            modifier = Modifier.size(42.dp),
-                        )
-                    }
-                }
-
                 Column(
-                    Modifier
+                    modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .padding(18.dp),
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
+                    val shownPosition = if (isSeeking) seekPreviewMs else positionMs
+                    val sliderMaximum = durationMs.coerceAtLeast(1L)
+                    Slider(
+                        value = shownPosition.coerceIn(0L, sliderMaximum).toFloat(),
+                        onValueChange = { value ->
+                            isSeeking = true
+                            seekPreviewMs = value.toLong().coerceIn(0L, sliderMaximum)
+                            controlsVisible = true
+                        },
+                        onValueChangeFinished = {
+                            seekTo(seekPreviewMs)
+                            isSeeking = false
+                        },
+                        valueRange = 0f..sliderMaximum.toFloat(),
+                        enabled = durationMs > 0L,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(formatPlaybackTime(shownPosition), color = Color.White)
+                        Text(formatPlaybackTime(durationMs), color = Color.White)
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(28.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        IconButton(
+                            onClick = { seekRelative(-SEEK_STEP_MS) },
+                            modifier = Modifier.size(58.dp),
+                        ) {
+                            Icon(
+                                Icons.Default.FastRewind,
+                                "后退五秒",
+                                tint = Color.White,
+                                modifier = Modifier.size(42.dp),
+                            )
+                        }
+
+                        IconButton(
+                            onClick = {
+                                if (isPlayingNow()) pausePlayback() else resumePlayback()
+                            },
+                            modifier = Modifier.size(72.dp),
+                        ) {
+                            Icon(
+                                if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                "播放或暂停",
+                                tint = Color.White,
+                                modifier = Modifier.size(56.dp),
+                            )
+                        }
+
+                        IconButton(
+                            onClick = { seekRelative(SEEK_STEP_MS) },
+                            modifier = Modifier.size(58.dp),
+                        ) {
+                            Icon(
+                                Icons.Default.FastForward,
+                                "前进五秒",
+                                tint = Color.White,
+                                modifier = Modifier.size(42.dp),
+                            )
+                        }
+                    }
                     Text(
                         if (isLandscapeScreen) {
                             "左侧调亮度 · 中间上下滑切换视频 · 右侧调音量"
@@ -619,21 +680,15 @@ private fun naturalLandscape(video: VideoItem?): Boolean? = when {
     else -> null
 }
 
-private fun Modifier.rotatePlayerLayout(rotatedQuarterTurn: Boolean): Modifier {
-    if (!rotatedQuarterTurn) return this
-    return layout { measurable, constraints ->
-        val outerWidth = constraints.maxWidth
-        val outerHeight = constraints.maxHeight
-        val child = measurable.measure(Constraints.fixed(outerHeight, outerWidth))
-        layout(outerWidth, outerHeight) {
-            child.placeWithLayer(
-                x = (outerWidth - outerHeight) / 2,
-                y = (outerHeight - outerWidth) / 2,
-            ) {
-                rotationZ = 90f
-                transformOrigin = TransformOrigin.Center
-            }
-        }
+private fun formatPlaybackTime(ms: Long): String {
+    val totalSeconds = ms.coerceAtLeast(0L) / 1000L
+    val hours = totalSeconds / 3600L
+    val minutes = totalSeconds / 60L % 60L
+    val seconds = totalSeconds % 60L
+    return if (hours > 0L) {
+        "%d:%02d:%02d".format(hours, minutes, seconds)
+    } else {
+        "%02d:%02d".format(minutes, seconds)
     }
 }
 
