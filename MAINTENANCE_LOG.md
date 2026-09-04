@@ -10,4 +10,5 @@
 6. 兜底扫描保留 Android scoped-storage 边界，不加入 `MANAGE_EXTERNAL_STORAGE`；系统不可见的应用私有目录不绕过权限读取。
 7. 文件夹视觉审计：原文件夹 Material 图标使用默认 `onSurface`，浅色主题下呈接近黑色；将浅色 `onSurface` / `onSurfaceVariant` 调整为蓝灰色，并覆盖 Android 12+ 动态浅色主题对应前景色。
 8. 覆盖升级约束：保持 applicationId `com.luxiaoshi.jianbo`，版本提升到 `1.0.9` / `versionCode=10`；最终 APK 必须继续使用 Google Drive 中同一简播正式证书签名。
-9. 待完成验证项：GitHub Actions Release 构建、APK 包名/版本解析、签名证书指纹核对、覆盖升级条件核对。完成后继续追加本日志。
+9. 第一次 GitHub Actions Release 构建（run 33852826797）失败。失败发生在 `mergeReleaseNativeLibs` 的依赖解析阶段，不是新扫描代码编译错误；原因是本次编辑 `build.gradle.kts` 时将原来的 `androidx.compose.material3:material3` 误写成 `androidx.material3:material3`，导致 Gradle 查找不存在的空版本依赖。已立即恢复为正确坐标，并记录为本次操作错误，禁止后续重复。
+10. 待完成验证项：修正后的 GitHub Actions Release 构建、APK 包名/版本解析、签名证书指纹核对、覆盖升级条件核对。完成后继续追加本日志。
