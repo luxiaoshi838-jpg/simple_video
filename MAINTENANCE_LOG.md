@@ -42,3 +42,4 @@
 17. 对两个最终 APK 的 ZIP 本地条目逐项检查：各有 275 个未压缩条目，4 字节对齐不合格条目均为 0。
 18. 最终 APK SHA-256：arm64-v8a=`8faf664ab0860a60f60994244dd867b621798d1a78ece8dfd4e1b77d17c1d87c`；armeabi-v7a=`131128ec1c02900b355a33d9928123c3fbf36aa75ef157962aa3f473988dc989`。最终签名包 `jianbo-1.0.10-signed.zip` SHA-256=`b1df0df78713a6fab4f05c3769a6fbc93d6068710f18fd92b5a4cedb17156918`。
 19. 使用方式确认：Android 11+ 首次使用隐藏微信视频扫描时，需要在简播主页点击“授权微信隐藏视频扫描”，由用户在系统设置中显式开启该应用的“所有文件访问”；返回后自动刷新。深度扫描只面向共享存储已知微信目录，若文件实际位于微信私有内部存储或受系统禁止访问的 `Android/data`，本版仍不会越权读取。
+20. 分支与 main 比较结果为 ahead 3 / behind 0，创建 GitHub PR `#13`（`agent/v1.0.10-wechat-hidden-scan` → `main`），确认 `mergeable=true` 后使用 merge 方式合并。main 合并提交为 `50b271f3089174dc0223752e8f970b74dda60abf`。合并前已完成成功 Release 构建与最终签名校验；本次主分支日志补记继续使用 `[skip ci]`，避免仅日志变化再次重复构建。
