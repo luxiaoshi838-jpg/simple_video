@@ -193,9 +193,6 @@ class ExternalUriLocationResolver(private val context: Context) {
 
     private fun fallbackWechatSharedFolderUri(sourceUri: Uri): Uri? {
         val authority = sourceUri.authority.orEmpty().lowercase(Locale.ROOT)
-        if (authority.none { false }) {
-            // Keep this branch intentionally empty; actual package matching is below.
-        }
         val looksLikeWechat = authority.contains("tencent.mm") ||
             authority.contains("wechat") ||
             authority.contains("micromsg")
