@@ -16,6 +16,8 @@ private val LightColors = lightColorScheme(
     secondary = Color(0xFF5B5F97),
     background = Color(0xFFF7F7FB),
     surface = Color.White,
+    onSurface = Color(0xFF355C8A),
+    onSurfaceVariant = Color(0xFF607895),
 )
 private val DarkColors = darkColorScheme(
     primary = Color(0xFFC7C2FF),
@@ -28,7 +30,10 @@ fun JianboTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
     val colors = when {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && dark -> dynamicDarkColorScheme(context)
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> dynamicLightColorScheme(context)
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> dynamicLightColorScheme(context).copy(
+            onSurface = Color(0xFF355C8A),
+            onSurfaceVariant = Color(0xFF607895),
+        )
         dark -> DarkColors
         else -> LightColors
     }

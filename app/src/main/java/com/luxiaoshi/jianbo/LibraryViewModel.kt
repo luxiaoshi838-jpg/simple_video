@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.luxiaoshi.jianbo.data.LibraryRepository
 import com.luxiaoshi.jianbo.data.LibraryUiState
+import com.luxiaoshi.jianbo.data.MediaStoreFilesVideoFallback
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -14,6 +15,7 @@ import kotlinx.coroutines.launch
 
 class LibraryViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = LibraryRepository(application)
+    private val mediaStoreFilesFallback = MediaStoreFilesVideoFallback(application)
     private val _uiState = MutableStateFlow(LibraryUiState())
     val uiState: StateFlow<LibraryUiState> = _uiState.asStateFlow()
     private var hasMediaPermission = false
@@ -26,7 +28,10 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     fun refresh() {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, permissionGranted = hasMediaPermission, errorMessage = null) }
-            runCatching { repository.loadLibrary(hasMediaPermission) }
+            runCatching {
+                val baseGroups = repository.loadLibrary(hasMediaPermission)
+                if (hasMediaPermission) mediaStoreFilesFallback.mergeInto(baseGroups) else baseGroups
+            }
                 .onSuccess { groups ->
                     _uiState.update {
                         it.copy(isLoading = false, groups = groups, hiddenGroupCount = repository.hiddenGroupCount())
