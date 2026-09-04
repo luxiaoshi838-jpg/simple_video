@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -27,12 +28,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.luxiaoshi.jianbo.data.ExternalOpenRequest
+import com.luxiaoshi.jianbo.data.ExternalUriLocation
+import com.luxiaoshi.jianbo.data.ExternalUriLocationResolver
 import com.luxiaoshi.jianbo.data.LibraryRepository
 import com.luxiaoshi.jianbo.player.PlayerScreen
 import com.luxiaoshi.jianbo.ui.theme.JianboTheme
 
 class ExternalOpenActivity : ComponentActivity() {
     private val repository by lazy { LibraryRepository(applicationContext) }
+    private val locationResolver by lazy { ExternalUriLocationResolver(applicationContext) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,6 +46,7 @@ class ExternalOpenActivity : ComponentActivity() {
                 ExternalOpenRoute(
                     incomingIntent = intent,
                     repository = repository,
+                    locationResolver = locationResolver,
                     finishActivity = ::finish,
                 )
             }
@@ -51,7 +56,10 @@ class ExternalOpenActivity : ComponentActivity() {
 
 private sealed interface ExternalOpenState {
     data object Loading : ExternalOpenState
-    data class Ready(val request: ExternalOpenRequest) : ExternalOpenState
+    data class Ready(
+        val request: ExternalOpenRequest,
+        val location: ExternalUriLocation,
+    ) : ExternalOpenState
     data object Unsupported : ExternalOpenState
 }
 
@@ -59,6 +67,7 @@ private sealed interface ExternalOpenState {
 private fun ExternalOpenRoute(
     incomingIntent: Intent,
     repository: LibraryRepository,
+    locationResolver: ExternalUriLocationResolver,
     finishActivity: () -> Unit,
 ) {
     val state by produceState<ExternalOpenState>(
@@ -67,7 +76,14 @@ private fun ExternalOpenRoute(
         key2 = incomingIntent.dataString,
     ) {
         val request = repository.resolveExternalOpen(incomingIntent)
-        value = if (request == null) ExternalOpenState.Unsupported else ExternalOpenState.Ready(request)
+        value = if (request == null) {
+            ExternalOpenState.Unsupported
+        } else {
+            ExternalOpenState.Ready(
+                request = request,
+                location = locationResolver.resolve(request.video.uri),
+            )
+        }
     }
 
     when (val current = state) {
@@ -75,6 +91,7 @@ private fun ExternalOpenRoute(
         ExternalOpenState.Unsupported -> UnsupportedExternalVideo(finishActivity)
         is ExternalOpenState.Ready -> ExternalVideoPlayer(
             request = current.request,
+            location = current.location,
             repository = repository,
             finishActivity = finishActivity,
         )
@@ -84,6 +101,7 @@ private fun ExternalOpenRoute(
 @Composable
 private fun ExternalVideoPlayer(
     request: ExternalOpenRequest,
+    location: ExternalUriLocation,
     repository: LibraryRepository,
     finishActivity: () -> Unit,
 ) {
@@ -107,26 +125,56 @@ private fun ExternalVideoPlayer(
     }
 
     if (permissionDialogVisible) {
-        val knownLocation = request.video.folderLocation
+        val fileLocation = location.fileLocation
+        val folderLocation = location.folderLocation ?: request.video.folderLocation
+        val suggestedFolderUri = location.suggestedFolderUri ?: request.suggestedFolderUri
+        val privateFolder = folderLocation?.startsWith("/data/") == true ||
+            folderLocation?.startsWith("/mnt/expand/") == true
+
         AlertDialog(
             onDismissRequest = finishActivity,
             title = { Text("加入这个视频所在文件夹？") },
             text = {
-                Text(
-                    if (knownLocation != null) {
-                        "当前视频位置：$knownLocation\n\n系统要求你确认一次文件夹访问权限。确认后，简播会长期记住该文件夹，并自动显示同目录中的视频。"
-                    } else {
-                        "微信允许简播临时打开了这个视频，但没有把真实父文件夹路径交给简播。请在系统文件夹选择器中确认它所在的文件夹；确认后简播会长期记住该文件夹。"
-                    },
-                )
+                SelectionContainer {
+                    Text(
+                        buildString {
+                            append("文件位置：")
+                            append(fileLocation ?: "真实路径不可读取")
+                            append("\n\n所在文件夹：")
+                            append(folderLocation ?: "真实路径不可读取")
+
+                            if (fileLocation == null || folderLocation == null) {
+                                append("\n\n来源 URI：")
+                                append(location.rawUri)
+                            }
+
+                            append("\n\n")
+                            when {
+                                privateFolder -> append(
+                                    "这个位置属于其他应用的私有存储。Android 允许简播临时读取当前视频，但不允许简播取得整个父文件夹权限。",
+                                )
+                                suggestedFolderUri != null -> append(
+                                    "系统仍要求你确认一次文件夹访问权限。选择器会尽量定位到上面显示的父文件夹；确认后简播会长期记住该文件夹。",
+                                )
+                                else -> append(
+                                    "系统没有提供可直接定位父目录的入口。若文件夹选择器停在“内部存储”根目录，请进入上面显示的具体子文件夹后再点“使用此文件夹”；内部存储根目录本身不能授权。",
+                                )
+                            }
+                        },
+                    )
+                }
             },
             confirmButton = {
-                Button(onClick = { folderLauncher.launch(request.suggestedFolderUri) }) {
-                    Text("授权所在文件夹")
+                if (!privateFolder) {
+                    Button(onClick = { folderLauncher.launch(suggestedFolderUri) }) {
+                        Text(if (suggestedFolderUri != null) "授权所在文件夹" else "手动选择具体文件夹")
+                    }
                 }
             },
             dismissButton = {
-                TextButton(onClick = finishActivity) { Text("仅播放这一次") }
+                TextButton(onClick = finishActivity) {
+                    Text(if (privateFolder) "完成" else "仅播放这一次")
+                }
             },
         )
     }
@@ -141,7 +189,7 @@ private fun LoadingExternalVideo() {
     ) {
         CircularProgressIndicator()
         Text(
-            "正在读取视频…",
+            "正在读取视频并解析真实位置…",
             modifier = Modifier.padding(top = 12.dp),
             style = MaterialTheme.typography.bodyMedium,
         )
