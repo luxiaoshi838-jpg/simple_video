@@ -33,3 +33,12 @@
 8. 新增独立分组 `微信隐藏视频`，用于集中显示深度扫描补充发现的文件，避免把大量哈希或 `.` 开头的内部目录名直接堆到主界面。
 9. 版本提升为 `1.0.10` / `versionCode=11`，applicationId 保持 `com.luxiaoshi.jianbo`，后续最终 APK 必须继续使用原简播正式证书以覆盖 1.0.9。
 10. 建立工作分支 `agent/v1.0.10-wechat-hidden-scan`，基线为 main `a1fa5e7753cf6c1657fe754c03d22fd47ec2d527`。源码修改完成后先执行 GitHub Actions Release 构建；构建、签名、APK 解析和覆盖验证结果继续追加到本节。
+11. 第一次 1.0.10 GitHub Actions Release 构建（run `33859587668`，job `100980719530`）失败于 `mergeReleaseNativeLibs`。原因不是隐藏视频扫描 Kotlin 代码，而是生成新版 `app/build.gradle.kts` 时再次把正确依赖 `androidx.compose.material3:material3` 误写为 `androidx.material3:material3`。这是 1.0.9 已记录过的同类错误，本次属于重复犯错；已恢复正确依赖坐标，后续禁止再通过整文件重写时改动无关依赖坐标。
+12. 修正依赖后提交 `505e841bfaa8e8cc713d7ec0fd3447fe458f5d99`，触发第二次 GitHub Actions Release 构建 run `33859926961` / job `100981782303`。构建、两个 ABI Release APK 生成及 artifact 上传全部成功；正式 `assembleRelease` 步骤约 3 分 36 秒，总任务约 4 分 11 秒，未达到 5 分钟卡死检查阈值。
+13. 成功构建产生 artifact `jianbo-unsigned-release-apk`，artifact id `9931816591`，包含 `arm64-v8a` 与 `armeabi-v7a` 两个 unsigned Release APK。
+14. 最终签名继续从 Google Drive 的同一 `简播签名.zip` 读取，不把 keystore、密码或 `keystore.properties` 上传 GitHub。第一次按 `keystore.properties` 中原相对路径直接定位证书时，因解压后的 JKS 位于签名包根目录而非 `signing/` 子目录导致 FileNotFound；改用签名包内实际 `jianbo-release.jks` 后继续。当前运行环境中 `apksigner` 直接向 `/mnt/data` 目标路径写出时出现本地挂载 Permission denied，因此改为先在临时目录完成官方 `apksigner` 签名，再复制最终 APK；这两项均为本地签名环境/路径问题，不涉及源码或签名证书变化，且密码始终未输出。
+15. 两个最终 APK 均通过 Android 官方 `apksigner verify --verbose --print-certs`：APK Signature Scheme v2=true、v3=true；正式证书 SHA-256 指纹继续为 `BE:84:CF:EE:C9:68:29:21:47:42:79:D1:31:54:D5:AA:F5:F7:79:3A:49:F6:9E:2C:7A:31:D3:4D:F6:67:7F:4C`，与 1.0.9 相同。
+16. 对最终两个 APK 的二进制 AndroidManifest 解析核验：package=`com.luxiaoshi.jianbo`、versionName=`1.0.10`、versionCode=`11`。结合正式签名证书未变且 versionCode 由 10 升到 11，满足覆盖当前 1.0.9 的升级条件。
+17. 对两个最终 APK 的 ZIP 本地条目逐项检查：各有 275 个未压缩条目，4 字节对齐不合格条目均为 0。
+18. 最终 APK SHA-256：arm64-v8a=`8faf664ab0860a60f60994244dd867b621798d1a78ece8dfd4e1b77d17c1d87c`；armeabi-v7a=`131128ec1c02900b355a33d9928123c3fbf36aa75ef157962aa3f473988dc989`。最终签名包 `jianbo-1.0.10-signed.zip` SHA-256=`b1df0df78713a6fab4f05c3769a6fbc93d6068710f18fd92b5a4cedb17156918`。
+19. 使用方式确认：Android 11+ 首次使用隐藏微信视频扫描时，需要在简播主页点击“授权微信隐藏视频扫描”，由用户在系统设置中显式开启该应用的“所有文件访问”；返回后自动刷新。深度扫描只面向共享存储已知微信目录，若文件实际位于微信私有内部存储或受系统禁止访问的 `Android/data`，本版仍不会越权读取。
