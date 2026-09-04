@@ -33,8 +33,13 @@ class WechatHiddenVideoScanner(private val context: Context) {
         if (roots.isEmpty()) return@withContext baseGroups
 
         val indexedPaths = queryIndexedPaths(roots)
-        val videos = scanRoots(roots, indexedPaths)
-            .distinctBy(VideoItem::id)
+        val existingStorageIdentities = baseGroups.asSequence()
+            .flatMap { it.videos.asSequence() }
+            .mapNotNull(VideoItem::storageIdentity)
+            .mapTo(hashSetOf()) { it.lowercase(Locale.ROOT) }
+
+        val videos = scanRoots(roots, indexedPaths, existingStorageIdentities)
+            .distinctBy { it.storageIdentity ?: it.id }
             .sortedWith(FILE_NAME_COMPARATOR)
         if (videos.isEmpty()) return@withContext baseGroups
 
@@ -78,7 +83,11 @@ class WechatHiddenVideoScanner(private val context: Context) {
             .distinctBy { it.absolutePath }
     }
 
-    private fun scanRoots(roots: List<File>, indexedPaths: Set<String>): List<VideoItem> {
+    private fun scanRoots(
+        roots: List<File>,
+        indexedPaths: Set<String>,
+        existingStorageIdentities: Set<String>,
+    ): List<VideoItem> {
         val result = mutableListOf<VideoItem>()
         val queue = ArrayDeque<File>()
         val visitedDirectories = hashSetOf<String>()
@@ -100,6 +109,9 @@ class WechatHiddenVideoScanner(private val context: Context) {
                         if (!looksLikeVideo(file)) continue
                         if (file.absolutePath in indexedPaths) continue
 
+                        val storageIdentity = storageIdentity(file)
+                        if (storageIdentity != null && storageIdentity in existingStorageIdentities) continue
+
                         val metadata = readVideoMetadata(file)
                         result += VideoItem(
                             id = "wechat-file:${file.absolutePath}",
@@ -112,6 +124,8 @@ class WechatHiddenVideoScanner(private val context: Context) {
                             height = metadata.height,
                             rotationDegrees = metadata.rotationDegrees,
                             dateAddedSeconds = (file.lastModified() / 1_000L).coerceAtLeast(0L),
+                            folderLocation = file.parentFile?.absolutePath?.let(::displayAbsoluteLocation),
+                            storageIdentity = storageIdentity,
                         )
                     }
                 }
@@ -198,6 +212,26 @@ class WechatHiddenVideoScanner(private val context: Context) {
             VideoMetadata()
         } finally {
             runCatching { retriever.release() }
+        }
+    }
+
+    private fun storageIdentity(file: File): String? {
+        val sharedRoot = runCatching { Environment.getExternalStorageDirectory().canonicalFile }.getOrNull()
+            ?: return null
+        val canonical = runCatching { file.canonicalFile }.getOrNull() ?: return null
+        val rootPath = sharedRoot.absolutePath.trimEnd('/')
+        val path = canonical.absolutePath
+        if (path != rootPath && !path.startsWith("$rootPath/")) return null
+        val relative = path.removePrefix(rootPath).trimStart('/')
+        return "${MediaStore.VOLUME_EXTERNAL_PRIMARY}:$relative".lowercase(Locale.ROOT)
+    }
+
+    private fun displayAbsoluteLocation(path: String): String {
+        val sharedPrefix = "/storage/emulated/0"
+        return if (path == sharedPrefix || path.startsWith("$sharedPrefix/")) {
+            "内部存储${path.removePrefix(sharedPrefix)}"
+        } else {
+            path
         }
     }
 

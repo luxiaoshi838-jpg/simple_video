@@ -6,10 +6,13 @@ import android.content.Intent
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
+import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.ArrayDeque
 import java.util.Locale
 
@@ -38,6 +41,68 @@ class LibraryRepository(private val context: Context) {
                 compareBy<VideoGroup> { it.name.lowercase() }
                     .thenBy { it.source.name },
             )
+    }
+
+    suspend fun resolveExternalOpen(intent: Intent): ExternalOpenRequest? = withContext(Dispatchers.IO) {
+        val uri = externalUri(intent) ?: return@withContext null
+        if (uri.scheme != "content" && uri.scheme != "file") return@withContext null
+
+        if (uri.scheme == "content" &&
+            intent.flags and Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION != 0 &&
+            intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0
+        ) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+        }
+
+        val name = queryDisplayName(uri)
+            ?: uri.lastPathSegment?.substringAfterLast('/')
+            ?: "外部视频"
+        val mime = runCatching { context.contentResolver.getType(uri) }
+            .getOrNull()
+            .orEmpty()
+            .lowercase(Locale.ROOT)
+        val extension = name.substringAfterLast('.', missingDelimiterValue = "")
+            .lowercase(Locale.ROOT)
+        if (!mime.startsWith("video/") &&
+            mime !in EXTRA_VIDEO_MIME_TYPES &&
+            extension !in VIDEO_EXTENSIONS
+        ) {
+            return@withContext null
+        }
+
+        val metadata = readVideoMetadata(uri)
+        val documentId = externalStorageDocumentId(uri)
+        val parentDocumentId = documentId?.let(::parentDocumentId)
+        val folderLocation = parentDocumentId?.let(::displayDocumentLocation)
+        val suggestedFolderUri = if (parentDocumentId != null && uri.authority != null) {
+            runCatching {
+                DocumentsContract.buildDocumentUri(requireNotNull(uri.authority), parentDocumentId)
+            }.getOrNull()
+        } else {
+            null
+        }
+
+        ExternalOpenRequest(
+            video = VideoItem(
+                id = "external:$uri",
+                uri = uri,
+                name = name,
+                folderKey = "external:${uri.authority ?: uri.scheme}",
+                folderName = folderLocation?.substringAfterLast('/') ?: "外部打开",
+                durationMs = metadata.durationMs,
+                width = metadata.width,
+                height = metadata.height,
+                rotationDegrees = metadata.rotationDegrees,
+                folderLocation = folderLocation,
+                storageIdentity = documentId?.let(::storageIdentityFromDocumentId),
+            ),
+            suggestedFolderUri = suggestedFolderUri,
+        )
     }
 
     fun addManualTree(uri: Uri) {
@@ -90,6 +155,10 @@ class LibraryRepository(private val context: Context) {
             add(MediaStore.Video.Media.DATE_ADDED)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 add(MediaStore.Video.Media.RELATIVE_PATH)
+                add(MediaStore.MediaColumns.VOLUME_NAME)
+            } else {
+                @Suppress("DEPRECATION")
+                add(MediaStore.Video.Media.DATA)
             }
         }.toTypedArray()
 
@@ -115,21 +184,47 @@ class LibraryRepository(private val context: Context) {
             } else {
                 -1
             }
+            val volumeColumn = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                cursor.getColumnIndex(MediaStore.MediaColumns.VOLUME_NAME)
+            } else {
+                -1
+            }
+            val dataColumn = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                @Suppress("DEPRECATION")
+                cursor.getColumnIndex(MediaStore.Video.Media.DATA)
+            } else {
+                -1
+            }
 
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idColumn)
                 val uri = ContentUris.withAppendedId(collection, id)
+                val name = cursor.stringOrNull(nameColumn) ?: "未命名视频"
                 val relativePath = cursor.stringOrNull(relativePathColumn)
+                val volumeName = cursor.stringOrNull(volumeColumn)
+                val rawPath = cursor.stringOrNull(dataColumn)
                 val bucketId = cursor.stringOrNull(bucketIdColumn)
                     ?: relativePath
+                    ?: rawPath?.substringBeforeLast('/')
                     ?: "unknown"
                 val folderName = cursor.stringOrNull(bucketNameColumn)
                     ?: relativePath?.trimEnd('/')?.substringAfterLast('/')
+                    ?: rawPath?.substringBeforeLast('/')?.substringAfterLast('/')
                     ?: "未命名文件夹"
+                val folderLocation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    displayMediaStoreLocation(relativePath, volumeName)
+                } else {
+                    rawPath?.substringBeforeLast('/')?.let(::displayAbsoluteLocation)
+                }
+                val storageIdentity = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    mediaStoreStorageIdentity(volumeName, relativePath, name)
+                } else {
+                    rawPath?.let(::canonicalLowercasePath)
+                }
                 result += VideoItem(
                     id = "media:$id",
                     uri = uri,
-                    name = cursor.stringOrNull(nameColumn) ?: "未命名视频",
+                    name = name,
                     folderKey = "media:$bucketId",
                     folderName = folderName,
                     durationMs = cursor.longOrZero(durationColumn),
@@ -137,6 +232,8 @@ class LibraryRepository(private val context: Context) {
                     height = cursor.intOrZero(heightColumn),
                     rotationDegrees = normalizeRotation(cursor.intOrZero(orientationColumn)),
                     dateAddedSeconds = cursor.longOrZero(dateColumn),
+                    folderLocation = folderLocation,
+                    storageIdentity = storageIdentity,
                 )
             }
         }
@@ -154,6 +251,9 @@ class LibraryRepository(private val context: Context) {
                 val directory = queue.removeFirst()
                 val groupName = directory.name ?: root.name ?: "手动导入"
                 val groupKey = "saf:${directory.uri}"
+                val groupLocation = describeDocumentLocation(directory.uri)
+                    ?: describeDocumentLocation(root.uri)
+                    ?: "已授权文件夹"
                 val children = runCatching { directory.listFiles().toList() }.getOrDefault(emptyList())
                 for (child in children) {
                     when {
@@ -171,6 +271,9 @@ class LibraryRepository(private val context: Context) {
                                 height = metadata.height,
                                 rotationDegrees = metadata.rotationDegrees,
                                 dateAddedSeconds = child.lastModified() / 1_000L,
+                                folderLocation = groupLocation,
+                                storageIdentity = externalStorageDocumentId(child.uri)
+                                    ?.let(::storageIdentityFromDocumentId),
                             )
                         }
                     }
@@ -178,6 +281,33 @@ class LibraryRepository(private val context: Context) {
             }
         }
         return result
+    }
+
+    private fun externalUri(intent: Intent): Uri? = when (intent.action) {
+        Intent.ACTION_VIEW -> intent.data
+        Intent.ACTION_SEND -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+        }
+        else -> null
+    }
+
+    private fun queryDisplayName(uri: Uri): String? {
+        if (uri.scheme == "file") return uri.lastPathSegment
+        return runCatching {
+            context.contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                val column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (column >= 0 && cursor.moveToFirst() && !cursor.isNull(column)) cursor.getString(column) else null
+            }
+        }.getOrNull()
     }
 
     private fun readVideoMetadata(uri: Uri): VideoMetadata {
@@ -220,6 +350,74 @@ class LibraryRepository(private val context: Context) {
         return extension in VIDEO_EXTENSIONS
     }
 
+    private fun describeDocumentLocation(uri: Uri): String? =
+        externalStorageDocumentId(uri)?.let(::displayDocumentLocation)
+
+    private fun externalStorageDocumentId(uri: Uri): String? {
+        if (uri.authority != EXTERNAL_STORAGE_DOCUMENTS_AUTHORITY) return null
+        return runCatching {
+            when {
+                DocumentsContract.isDocumentUri(context, uri) -> DocumentsContract.getDocumentId(uri)
+                DocumentsContract.isTreeUri(uri) -> DocumentsContract.getTreeDocumentId(uri)
+                else -> null
+            }
+        }.getOrNull()
+    }
+
+    private fun parentDocumentId(documentId: String): String? {
+        val volume = documentId.substringBefore(':', missingDelimiterValue = "")
+        val path = documentId.substringAfter(':', missingDelimiterValue = "")
+        if (volume.isBlank()) return null
+        val parentPath = path.substringBeforeLast('/', missingDelimiterValue = "")
+        return "$volume:$parentPath"
+    }
+
+    private fun displayDocumentLocation(documentId: String): String {
+        val volume = documentId.substringBefore(':', missingDelimiterValue = documentId)
+        val path = documentId.substringAfter(':', missingDelimiterValue = "").trim('/')
+        val rootName = if (volume.equals("primary", ignoreCase = true)) "内部存储" else volume
+        return if (path.isBlank()) rootName else "$rootName/$path"
+    }
+
+    private fun storageIdentityFromDocumentId(documentId: String): String {
+        val volume = documentId.substringBefore(':', missingDelimiterValue = "primary")
+        val path = documentId.substringAfter(':', missingDelimiterValue = "").trim('/')
+        val mediaVolume = if (volume.equals("primary", ignoreCase = true)) {
+            MediaStore.VOLUME_EXTERNAL_PRIMARY
+        } else {
+            volume
+        }
+        return "$mediaVolume:$path".lowercase(Locale.ROOT)
+    }
+
+    private fun displayMediaStoreLocation(relativePath: String?, volumeName: String?): String? {
+        val path = relativePath?.trim('/')?.takeIf(String::isNotBlank) ?: return null
+        val rootName = if (volumeName.isNullOrBlank() || volumeName == MediaStore.VOLUME_EXTERNAL_PRIMARY) {
+            "内部存储"
+        } else {
+            volumeName
+        }
+        return "$rootName/$path"
+    }
+
+    private fun mediaStoreStorageIdentity(volumeName: String?, relativePath: String?, name: String): String? {
+        val path = relativePath?.trim('/') ?: return null
+        val volume = volumeName?.takeIf(String::isNotBlank) ?: MediaStore.VOLUME_EXTERNAL_PRIMARY
+        return "$volume:$path/$name".lowercase(Locale.ROOT)
+    }
+
+    private fun displayAbsoluteLocation(path: String): String {
+        val sharedPrefix = "/storage/emulated/0"
+        return if (path == sharedPrefix || path.startsWith("$sharedPrefix/")) {
+            "内部存储${path.removePrefix(sharedPrefix)}"
+        } else {
+            path
+        }
+    }
+
+    private fun canonicalLowercasePath(path: String): String =
+        runCatching { File(path).canonicalPath }.getOrDefault(path).lowercase(Locale.ROOT)
+
     private fun android.database.Cursor.stringOrNull(index: Int): String? =
         if (index >= 0 && !isNull(index)) getString(index) else null
 
@@ -240,6 +438,13 @@ class LibraryRepository(private val context: Context) {
         const val PREFS_NAME = "jianbo_library"
         const val KEY_MANUAL_TREES = "manual_tree_uris"
         const val KEY_HIDDEN_GROUPS = "hidden_group_keys"
+        const val EXTERNAL_STORAGE_DOCUMENTS_AUTHORITY = "com.android.externalstorage.documents"
+
+        val EXTRA_VIDEO_MIME_TYPES = setOf(
+            "application/octet-stream",
+            "application/mp4",
+            "application/x-matroska",
+        )
 
         val VIDEO_EXTENSIONS = setOf(
             "3g2", "3gp", "amv", "asf", "avi", "divx", "dv", "f4v", "flv",

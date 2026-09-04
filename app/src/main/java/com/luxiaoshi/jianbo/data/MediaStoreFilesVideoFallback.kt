@@ -8,6 +8,7 @@ import android.os.Build
 import android.provider.MediaStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
 
 /**
@@ -84,6 +85,7 @@ class MediaStoreFilesVideoFallback(private val context: Context) {
             add(MediaStore.MediaColumns.DATE_ADDED)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 add(MediaStore.MediaColumns.RELATIVE_PATH)
+                add(MediaStore.MediaColumns.VOLUME_NAME)
             } else {
                 @Suppress("DEPRECATION")
                 add(MediaStore.MediaColumns.DATA)
@@ -122,6 +124,11 @@ class MediaStoreFilesVideoFallback(private val context: Context) {
                 @Suppress("DEPRECATION")
                 cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
             }
+            val volumeColumn = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                cursor.getColumnIndex(MediaStore.MediaColumns.VOLUME_NAME)
+            } else {
+                -1
+            }
 
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idColumn)
@@ -134,6 +141,7 @@ class MediaStoreFilesVideoFallback(private val context: Context) {
                 if (!looksLikeVideo(name, mime, mediaType)) continue
 
                 val rawPath = cursor.stringOrNull(pathColumn)
+                val volumeName = cursor.stringOrNull(volumeColumn)
                 val directoryPath = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     rawPath?.trim('/')
                 } else {
@@ -149,6 +157,16 @@ class MediaStoreFilesVideoFallback(private val context: Context) {
                     ?: folderName.lowercase(Locale.ROOT)
                 val uri = ContentUris.withAppendedId(collection, id)
                 val metadata = readVideoMetadata(uri)
+                val folderLocation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    displayMediaStoreLocation(directoryPath, volumeName)
+                } else {
+                    directoryPath?.let(::displayAbsoluteLocation)
+                }
+                val storageIdentity = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    mediaStoreStorageIdentity(volumeName, directoryPath, name)
+                } else {
+                    rawPath?.let(::canonicalLowercasePath)
+                }
 
                 result += VideoItem(
                     id = stableId,
@@ -161,6 +179,8 @@ class MediaStoreFilesVideoFallback(private val context: Context) {
                     height = metadata.height,
                     rotationDegrees = metadata.rotationDegrees,
                     dateAddedSeconds = cursor.longOrZero(dateColumn),
+                    folderLocation = folderLocation,
+                    storageIdentity = storageIdentity,
                 )
             }
         }
@@ -197,6 +217,34 @@ class MediaStoreFilesVideoFallback(private val context: Context) {
             runCatching { retriever.release() }
         }
     }
+
+    private fun displayMediaStoreLocation(relativePath: String?, volumeName: String?): String? {
+        val path = relativePath?.trim('/')?.takeIf(String::isNotBlank) ?: return null
+        val rootName = if (volumeName.isNullOrBlank() || volumeName == MediaStore.VOLUME_EXTERNAL_PRIMARY) {
+            "内部存储"
+        } else {
+            volumeName
+        }
+        return "$rootName/$path"
+    }
+
+    private fun mediaStoreStorageIdentity(volumeName: String?, relativePath: String?, name: String): String? {
+        val path = relativePath?.trim('/') ?: return null
+        val volume = volumeName?.takeIf(String::isNotBlank) ?: MediaStore.VOLUME_EXTERNAL_PRIMARY
+        return "$volume:$path/$name".lowercase(Locale.ROOT)
+    }
+
+    private fun displayAbsoluteLocation(path: String): String {
+        val sharedPrefix = "/storage/emulated/0"
+        return if (path == sharedPrefix || path.startsWith("$sharedPrefix/")) {
+            "内部存储${path.removePrefix(sharedPrefix)}"
+        } else {
+            path
+        }
+    }
+
+    private fun canonicalLowercasePath(path: String): String =
+        runCatching { File(path).canonicalPath }.getOrDefault(path).lowercase(Locale.ROOT)
 
     private fun hiddenGroupKeys(): Set<String> =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

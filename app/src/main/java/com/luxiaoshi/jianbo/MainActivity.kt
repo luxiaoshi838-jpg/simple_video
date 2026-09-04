@@ -388,7 +388,16 @@ private fun GroupScreen(
             title = {
                 Column {
                     Text(group.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${group.videos.size} 个视频", style = MaterialTheme.typography.labelSmall)
+                    Text(
+                        text = if (group.location.isNullOrBlank()) {
+                            "${group.videos.size} 个视频"
+                        } else {
+                            "${group.videos.size} 个视频 · ${group.location}"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             },
             navigationIcon = {

@@ -13,6 +13,8 @@ data class VideoItem(
     val height: Int = 0,
     val rotationDegrees: Int = 0,
     val dateAddedSeconds: Long = 0L,
+    val folderLocation: String? = null,
+    val storageIdentity: String? = null,
 )
 
 data class VideoGroup(
@@ -23,7 +25,13 @@ data class VideoGroup(
 ) {
     enum class Source { AUTO, MANUAL }
     val totalDurationMs: Long get() = videos.sumOf(VideoItem::durationMs)
+    val location: String? get() = videos.firstNotNullOfOrNull(VideoItem::folderLocation)
 }
+
+data class ExternalOpenRequest(
+    val video: VideoItem,
+    val suggestedFolderUri: Uri? = null,
+)
 
 data class LibraryUiState(
     val isLoading: Boolean = false,
