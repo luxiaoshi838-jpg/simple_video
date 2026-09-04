@@ -19,3 +19,4 @@
 15. 对两个最终 APK 的二进制 AndroidManifest 进行解析核验：package 均为 `com.luxiaoshi.jianbo`，versionName 均为 `1.0.9`，versionCode 均为 `10`。结合正式证书未变、versionCode 高于 1.0.8 的 9，满足当前正式简播 1.0.8 的覆盖升级条件。
 16. 最终 APK SHA-256：arm64-v8a = `bdc2fd265f20252b1563d23c2a9a57f10993917383f97b911996467dbef41893`；armeabi-v7a = `cb6bd17b1b6663aa0f899ffe266a00b3a716761b263ac438c4724de98ffe56a5`。
 17. 微信视频识别能力边界：本版可补充发现已进入 Android 共享媒体数据库、但未正常出现在 `MediaStore.Video` 分类中的本地视频；Android 系统仍不允许第三方应用越权读取微信私有目录，因此私有缓存文件不会通过本修复绕过系统权限直接读取。
+18. 创建 GitHub PR `#12`（`agent/v1.0.9-media-scan-ui` → `main`），核对分支相对 main 为 ahead 3 / behind 0；PR 可合并后使用 merge 方式完成合并。main 合并提交为 `39cbb56c5700709443f797a38bea3a19b80f515e`。本次最终日志补记使用 `[skip ci]`，避免在已通过 Release 构建后仅因日志文本再次触发重复构建。
