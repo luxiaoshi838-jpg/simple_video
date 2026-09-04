@@ -28,6 +28,7 @@ data class VideoGroup(
 data class LibraryUiState(
     val isLoading: Boolean = false,
     val permissionGranted: Boolean = false,
+    val hiddenScanAccessGranted: Boolean = false,
     val groups: List<VideoGroup> = emptyList(),
     val hiddenGroupCount: Int = 0,
     val errorMessage: String? = null,

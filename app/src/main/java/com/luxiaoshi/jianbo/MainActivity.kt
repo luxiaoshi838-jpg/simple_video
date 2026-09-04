@@ -1,10 +1,14 @@
 package com.luxiaoshi.jianbo
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -102,17 +106,19 @@ private fun JianboApp(viewModel: LibraryViewModel) {
     var playback by remember { mutableStateOf<Playback?>(null) }
     val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO
     else Manifest.permission.READ_EXTERNAL_STORAGE
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        viewModel.setPermission(it)
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        viewModel.setAccess(granted, hiddenScanAccessGranted(granted))
     }
     val folderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         uri?.let(viewModel::importFolder)
     }
+    val hiddenScanAccessLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        viewModel.setAccess(state.permissionGranted, hiddenScanAccessGranted(state.permissionGranted))
+    }
 
     LaunchedEffect(Unit) {
-        viewModel.setPermission(
-            ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED,
-        )
+        val mediaGranted = ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+        viewModel.setAccess(mediaGranted, hiddenScanAccessGranted(mediaGranted))
     }
 
     playback?.let {
@@ -147,6 +153,22 @@ private fun JianboApp(viewModel: LibraryViewModel) {
         LibraryScreen(
             state = state,
             requestPermission = { permissionLauncher.launch(permission) },
+            requestHiddenScanAccess = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    val appSettingsIntent = Intent(
+                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:${context.packageName}"),
+                    )
+                    runCatching { hiddenScanAccessLauncher.launch(appSettingsIntent) }
+                        .onFailure {
+                            hiddenScanAccessLauncher.launch(
+                                Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
+                            )
+                        }
+                } else {
+                    permissionLauncher.launch(permission)
+                }
+            },
             importFolder = { folderLauncher.launch(null) },
             refresh = viewModel::refresh,
             hideGroups = viewModel::hideGroups,
@@ -164,6 +186,7 @@ private fun JianboApp(viewModel: LibraryViewModel) {
 private fun LibraryScreen(
     state: LibraryUiState,
     requestPermission: () -> Unit,
+    requestHiddenScanAccess: () -> Unit,
     importFolder: () -> Unit,
     refresh: () -> Unit,
     hideGroups: (Set<String>) -> Unit,
@@ -230,6 +253,24 @@ private fun LibraryScreen(
                         }
                     }
                 }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !state.hiddenScanAccessGranted) {
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            FilledTonalButton(
+                                onClick = requestHiddenScanAccess,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Icon(Icons.Default.FolderOpen, null)
+                                Spacer(Modifier.size(8.dp))
+                                Text("授权微信隐藏视频扫描")
+                            }
+                            Text(
+                                "用于扫描共享存储中未进入系统媒体库的微信视频，包括 . 开头的隐藏目录。",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                }
                 if (state.groups.isEmpty() && !state.isLoading) {
                     item { EmptyLibrary(state.permissionGranted, requestPermission, importFolder) }
                 }
@@ -259,11 +300,20 @@ private fun LibraryScreen(
                             Modifier.padding(16.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Icon(
-                                if (checked) Icons.Default.CheckCircle else Icons.Default.Folder,
-                                null,
-                                Modifier.size(40.dp),
-                            )
+                            if (checked) {
+                                Icon(
+                                    Icons.Default.CheckCircle,
+                                    null,
+                                    Modifier.size(40.dp),
+                                )
+                            } else {
+                                Icon(
+                                    Icons.Default.Folder,
+                                    null,
+                                    Modifier.size(40.dp),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
                             Spacer(Modifier.size(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(
@@ -441,6 +491,13 @@ private fun EmptyLibrary(
         FilledTonalButton(onClick = importFolder) { Text("手动导入文件夹") }
     }
 }
+
+private fun hiddenScanAccessGranted(mediaPermissionGranted: Boolean): Boolean =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        Environment.isExternalStorageManager()
+    } else {
+        mediaPermissionGranted
+    }
 
 private fun Set<String>.toggle(value: String): Set<String> =
     if (value in this) this - value else this + value
