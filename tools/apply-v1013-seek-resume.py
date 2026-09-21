@@ -433,7 +433,7 @@ player = replace_once(
 ): Long {
     if (durationMs <= 0L || screenWidthPx <= 0f) return startPositionMs.coerceAtLeast(0L)
     val safeStart = startPositionMs.coerceIn(0L, durationMs)
-    val deltaMs = (durationMs.toDouble() * (dragPx / screenWidthPx).toDouble()).toLong()
+    val deltaMs = kotlin.math.round(durationMs.toDouble() * dragPx.toDouble() / screenWidthPx.toDouble()).toLong()
     return (safeStart + deltaMs).coerceIn(0L, durationMs)
 }
 
