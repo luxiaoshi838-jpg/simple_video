@@ -561,6 +561,12 @@ workflow = replace_once(
 )
 workflow = replace_once(
     workflow,
+    '        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"',
+    '        run: /usr/local/lib/android/sdk/cmdline-tools/16.0/bin/sdkmanager "platforms;android-36" "build-tools;36.0.0"',
+    "use sdkmanager absolute path",
+)
+workflow = replace_once(
+    workflow,
     "      - name: Build unsigned release APK\n        run: gradle :app:assembleRelease --stacktrace",
     """      - name: Run unit tests
         run: gradle :app:testDebugUnitTest :app:testReleaseUnitTest --stacktrace
