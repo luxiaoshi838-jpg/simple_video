@@ -554,6 +554,9 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                             } else {
                                 DragAxis.VERTICAL
                             }
+                            if (gestureAxis == DragAxis.HORIZONTAL_SEEK) {
+                                overlay = null
+                            }
                         }
                         when (gestureAxis) {
                             DragAxis.HORIZONTAL_SEEK -> {
@@ -565,8 +568,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                                         dragPx = totalX,
                                         screenWidthPx = width.toFloat(),
                                     )
-                                    overlay =
-                                        "\${formatPlaybackTime(seekPreviewMs)} / \${formatPlaybackTime(gestureDurationMs)}"
+
                                 }
                             }
                             DragAxis.VERTICAL -> {
