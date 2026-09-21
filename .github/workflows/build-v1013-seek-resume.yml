@@ -1,0 +1,78 @@
+name: Build 简播 1.0.13 seek and resume
+
+on:
+  push:
+    branches: ["agent/v1.0.13-seek-resume"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-v1013:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply v1.0.13 source migration
+        run: python3 tools/apply-v1013-seek-resume.py
+
+      - name: Verify source migration
+        run: |
+          grep -q 'versionCode = 14' app/build.gradle.kts
+          grep -q 'versionName = "1.0.13"' app/build.gradle.kts
+          grep -q 'DragAxis.HORIZONTAL_SEEK' app/src/main/java/com/luxiaoshi/jianbo/player/PlayerScreen.kt
+          grep -q 'PlaybackProgressStore' app/src/main/java/com/luxiaoshi/jianbo/player/PlayerScreen.kt
+          grep -q 'clearCurrentProgress(markCompleted = true)' app/src/main/java/com/luxiaoshi/jianbo/player/PlayerScreen.kt
+          test -f app/src/main/java/com/luxiaoshi/jianbo/player/PlaybackProgressStore.kt
+          test -f app/src/test/java/com/luxiaoshi/jianbo/player/PlayerInteractionLogicTest.kt
+          test ! -f tools/v108-controls.patch
+          git diff --check
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android API 36
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+
+      - name: Run Debug and Release unit tests
+        run: gradle :app:testDebugUnitTest :app:testReleaseUnitTest --stacktrace
+
+      - name: Build release APKs
+        run: gradle :app:assembleRelease --stacktrace
+
+      - name: Verify APK outputs
+        run: |
+          test -n "$(find app/build/outputs/apk/release -name '*.apk' -print -quit)"
+          find app/build/outputs/apk/release -name '*.apk' -maxdepth 3 -print
+
+      - name: Commit validated source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "[skip ci] v1.0.13: swipe seek and resume playback"
+          git push origin HEAD:agent/v1.0.13-seek-resume
+
+      - name: Upload unsigned release APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: jianbo-1.0.13-unsigned-release
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
