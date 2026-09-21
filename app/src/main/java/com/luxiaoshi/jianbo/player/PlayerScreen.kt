@@ -82,6 +82,11 @@ import kotlin.math.abs
 
 private val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f)
 private const val SEEK_STEP_MS = 5_000L
+private const val CONTROLS_HIDE_DELAY_MS = 5_000L
+private const val CENTER_TAP_MIN_X = 0.38f
+private const val CENTER_TAP_MAX_X = 0.62f
+private const val CENTER_TAP_MIN_Y = 0.35f
+private const val CENTER_TAP_MAX_Y = 0.65f
 
 private val VLC_PREFERRED_EXTENSIONS = setOf(
     "amv", "asf", "avi", "divx", "dv", "flv", "mxf", "ogm", "rm", "rmvb", "vob", "wmv",
@@ -89,6 +94,7 @@ private val VLC_PREFERRED_EXTENSIONS = setOf(
 
 private enum class PlaybackBackend { MEDIA3, VLC }
 private enum class VerticalGestureMode { BRIGHTNESS, VIDEO_SWITCH, VOLUME }
+private enum class DragAxis { UNDECIDED, HORIZONTAL_SEEK, VERTICAL }
 
 @Composable
 fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
@@ -96,6 +102,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     val activity = context as Activity
     val lifecycleOwner = LocalLifecycleOwner.current
     val audio = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+    val progressStore = remember { PlaybackProgressStore(context.applicationContext) }
 
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
@@ -116,6 +123,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     val vlcPlayer = remember { VlcMediaPlayer(libVLC) }
 
     val initialIndex = startIndex.coerceIn(videos.indices)
+    val initialVideo = videos[initialIndex]
     var currentIndex by remember { mutableIntStateOf(initialIndex) }
     var backend by remember { mutableStateOf(preferredBackend(videos.getOrNull(initialIndex))) }
     var playing by remember { mutableStateOf(false) }
@@ -130,41 +138,84 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     var height by remember { mutableIntStateOf(1) }
     var vlcVideoLayout by remember { mutableStateOf<VLCVideoLayout?>(null) }
     var fallbackPositionMs by remember { mutableLongStateOf(0L) }
-    var positionMs by remember { mutableLongStateOf(0L) }
-    var durationMs by remember { mutableLongStateOf(0L) }
+    var resumePositionMs by remember {
+        mutableLongStateOf(progressStore.loadResumePosition(initialVideo))
+    }
+    var currentVideoCompleted by remember { mutableStateOf(false) }
+    var positionMs by remember { mutableLongStateOf(resumePositionMs) }
+    var durationMs by remember { mutableLongStateOf(initialVideo.durationMs.coerceAtLeast(0L)) }
     var isSeeking by remember { mutableStateOf(false) }
-    var seekPreviewMs by remember { mutableLongStateOf(0L) }
+    var seekPreviewMs by remember { mutableLongStateOf(resumePositionMs) }
     var resumeAfterForeground by remember { mutableStateOf(false) }
+    var controlsInteractionTick by remember { mutableLongStateOf(0L) }
     val isLandscapeScreen = width > height
+
+    fun showControlsForInteraction() {
+        controlsVisible = true
+        controlsInteractionTick += 1L
+    }
+
+    fun saveCurrentProgress() {
+        val video = videos.getOrNull(currentIndex) ?: return
+        if (currentVideoCompleted) {
+            progressStore.clear(video)
+            return
+        }
+        val enginePosition = when (backend) {
+            PlaybackBackend.MEDIA3 -> exoPlayer.currentPosition.coerceAtLeast(0L)
+            PlaybackBackend.VLC -> vlcPlayer.time.coerceAtLeast(0L)
+        }
+        val current = if (enginePosition > 0L) enginePosition else positionMs.coerceAtLeast(0L)
+        if (current > 0L) progressStore.save(video, current) else progressStore.clear(video)
+    }
+
+    fun clearCurrentProgress(markCompleted: Boolean = false) {
+        videos.getOrNull(currentIndex)?.let(progressStore::clear)
+        if (markCompleted) {
+            currentVideoCompleted = true
+            positionMs = 0L
+            seekPreviewMs = 0L
+        }
+    }
+
+    fun exitPlayer() {
+        saveCurrentProgress()
+        onExit()
+    }
 
     fun selectVideo(index: Int) {
         val safeIndex = index.coerceIn(videos.indices)
         val video = videos[safeIndex]
         currentIndex = safeIndex
         backend = preferredBackend(video)
+        currentVideoCompleted = false
         fallbackPositionMs = 0L
-        positionMs = 0L
+        resumePositionMs = progressStore.loadResumePosition(video)
+        positionMs = resumePositionMs
+        seekPreviewMs = resumePositionMs
         durationMs = video.durationMs.coerceAtLeast(0L)
         isSeeking = false
         targetLandscape = naturalLandscape(video)
         playing = false
-        controlsVisible = true
+        showControlsForInteraction()
     }
 
     fun playPreviousVideo() {
         if (currentIndex > 0) {
+            saveCurrentProgress()
             selectVideo(currentIndex - 1)
             overlay = "上一个视频"
         }
     }
 
     fun playNextVideo(manual: Boolean = true) {
+        if (manual) saveCurrentProgress() else clearCurrentProgress(markCompleted = true)
         if (currentIndex < videos.lastIndex) {
             selectVideo(currentIndex + 1)
             overlay = if (manual) "下一个视频" else "自动播放下一个"
         } else {
             playing = false
-            controlsVisible = true
+            showControlsForInteraction()
             if (!manual) overlay = "已经播放到最后一个视频"
         }
     }
@@ -189,7 +240,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
             PlaybackBackend.MEDIA3 -> exoPlayer.pause()
             PlaybackBackend.VLC -> vlcPlayer.pause()
         }
-        if (showControls) controlsVisible = true
+        if (showControls) showControlsForInteraction()
     }
 
     fun resumePlayback() {
@@ -197,7 +248,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
             PlaybackBackend.MEDIA3 -> exoPlayer.play()
             PlaybackBackend.VLC -> vlcPlayer.play()
         }
-        controlsVisible = true
+        showControlsForInteraction()
     }
 
     fun seekTo(targetMs: Long) {
@@ -212,19 +263,26 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
             PlaybackBackend.VLC -> vlcPlayer.time = safeTarget
         }
         positionMs = safeTarget
-        controlsVisible = true
+        seekPreviewMs = safeTarget
+        currentVideoCompleted = knownDuration > 0L && safeTarget >= knownDuration
+        videos.getOrNull(currentIndex)?.let { video ->
+            if (currentVideoCompleted || safeTarget <= 0L) progressStore.clear(video)
+            else progressStore.save(video, safeTarget)
+        }
+        showControlsForInteraction()
     }
 
     fun seekRelative(deltaMs: Long) {
         seekTo(currentPosition() + deltaMs)
     }
 
-    BackHandler(onBack = onExit)
+    BackHandler(onBack = { exitPlayer() })
 
     DisposableEffect(lifecycleOwner, backend) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_STOP -> {
+                    saveCurrentProgress()
                     resumeAfterForeground = isPlayingNow()
                     if (resumeAfterForeground) {
                         pausePlayback(showControls = false)
@@ -262,7 +320,16 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                 when (playbackState) {
                     Player.STATE_READY -> {
                         val playerDuration = exoPlayer.duration
-                        if (playerDuration > 0L) durationMs = playerDuration
+                        if (playerDuration > 0L) {
+                            durationMs = playerDuration
+                            if (positionMs > 0L && positionMs >= playerDuration) {
+                                videos.getOrNull(currentIndex)?.let(progressStore::clear)
+                                exoPlayer.seekTo(0L)
+                                positionMs = 0L
+                                seekPreviewMs = 0L
+                                currentVideoCompleted = false
+                            }
+                        }
                     }
 
                     Player.STATE_ENDED -> playNextVideo(manual = false)
@@ -293,7 +360,10 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                     runCatching { vlcPlayer.setScale(0f) }
                     runCatching { vlcPlayer.setAspectRatio(null) }
                     if (fallbackPositionMs > 0L) {
-                        vlcPlayer.time = fallbackPositionMs
+                        val target = fallbackPositionMs
+                        vlcPlayer.time = target
+                        positionMs = target
+                        seekPreviewMs = target
                         fallbackPositionMs = 0L
                     }
                 }
@@ -324,6 +394,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
         activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         onDispose {
+            saveCurrentProgress()
             runCatching { exoPlayer.stop() }
             exoPlayer.release()
             runCatching { vlcPlayer.stop() }
@@ -352,14 +423,21 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     LaunchedEffect(currentIndex, backend, vlcVideoLayout) {
         val video = videos.getOrNull(currentIndex) ?: return@LaunchedEffect
         playing = false
-        positionMs = 0L
+        positionMs = resumePositionMs
+        seekPreviewMs = resumePositionMs
         durationMs = video.durationMs.coerceAtLeast(0L)
 
         when (backend) {
             PlaybackBackend.MEDIA3 -> {
                 runCatching { vlcPlayer.stop() }
                 exoPlayer.stop()
-                exoPlayer.setMediaItem(MediaItem.fromUri(video.uri))
+                val mediaItem = MediaItem.fromUri(video.uri)
+                if (resumePositionMs > 0L) {
+                    exoPlayer.setMediaItem(mediaItem, resumePositionMs)
+                } else {
+                    exoPlayer.setMediaItem(mediaItem)
+                }
+                resumePositionMs = 0L
                 exoPlayer.prepare()
                 exoPlayer.setPlaybackSpeed(speed)
                 exoPlayer.playWhenReady = true
@@ -376,6 +454,10 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                 }
                 vlcPlayer.setMedia(media)
                 media.release()
+                if (fallbackPositionMs <= 0L && resumePositionMs > 0L) {
+                    fallbackPositionMs = resumePositionMs
+                }
+                resumePositionMs = 0L
                 vlcPlayer.play()
             }
         }
@@ -398,9 +480,18 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
         }
     }
 
-    LaunchedEffect(playing, controlsVisible) {
-        if (playing && controlsVisible && !isSeeking) {
-            delay(2500)
+    LaunchedEffect(currentIndex, backend, playing, isSeeking, currentVideoCompleted) {
+        if (playing && !isSeeking && !currentVideoCompleted) {
+            while (true) {
+                delay(2_000L)
+                saveCurrentProgress()
+            }
+        }
+    }
+
+    LaunchedEffect(controlsVisible, controlsInteractionTick, isSeeking, speedDialog) {
+        if (controlsVisible && !isSeeking && !speedDialog) {
+            delay(CONTROLS_HIDE_DELAY_MS)
             controlsVisible = false
         }
     }
@@ -421,14 +512,23 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                 height = it.height.coerceAtLeast(1)
             }
             .pointerInput(width, height, currentIndex, backend) {
+                var gestureAxis = DragAxis.UNDECIDED
                 var gestureMode = VerticalGestureMode.VIDEO_SWITCH
                 var startBrightness = 0.5f
                 var startVolume = 0
+                var totalX = 0f
                 var totalY = 0f
+                var seekStartMs = 0L
+                var gestureDurationMs = 0L
 
                 detectDragGestures(
                     onDragStart = { point ->
+                        showControlsForInteraction()
+                        gestureAxis = DragAxis.UNDECIDED
+                        totalX = 0f
                         totalY = 0f
+                        seekStartMs = currentPosition()
+                        gestureDurationMs = currentDuration().takeIf { it > 0L } ?: durationMs
                         gestureMode = if (!isLandscapeScreen) {
                             VerticalGestureMode.VIDEO_SWITCH
                         } else {
@@ -438,7 +538,6 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                                 else -> VerticalGestureMode.VIDEO_SWITCH
                             }
                         }
-
                         startBrightness = activity.window.attributes.screenBrightness
                             .takeIf { it >= 0f }
                             ?: 0.5f
@@ -446,44 +545,89 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                     },
                     onDrag = { change, dragAmount ->
                         change.consume()
+                        showControlsForInteraction()
+                        totalX += dragAmount.x
                         totalY += dragAmount.y
-                        val ratio = (-totalY / height).coerceIn(-1f, 1f)
-                        when (gestureMode) {
-                            VerticalGestureMode.BRIGHTNESS -> {
-                                val value = (startBrightness + ratio).coerceIn(0.01f, 1f)
-                                val params = activity.window.attributes
-                                params.screenBrightness = value
-                                activity.window.attributes = params
-                                overlay = "亮度 ${(value * 100).toInt()}%"
+                        if (gestureAxis == DragAxis.UNDECIDED) {
+                            gestureAxis = if (abs(totalX) >= abs(totalY)) {
+                                DragAxis.HORIZONTAL_SEEK
+                            } else {
+                                DragAxis.VERTICAL
                             }
-
-                            VerticalGestureMode.VOLUME -> {
-                                val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                                val value = (startVolume + ratio * max).toInt().coerceIn(0, max)
-                                audio.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0)
-                                overlay = "音量 ${(value * 100f / max).toInt()}%"
+                        }
+                        when (gestureAxis) {
+                            DragAxis.HORIZONTAL_SEEK -> {
+                                if (gestureDurationMs > 0L) {
+                                    isSeeking = true
+                                    seekPreviewMs = seekPositionForHorizontalDrag(
+                                        startPositionMs = seekStartMs,
+                                        durationMs = gestureDurationMs,
+                                        dragPx = totalX,
+                                        screenWidthPx = width.toFloat(),
+                                    )
+                                    overlay =
+                                        "\${formatPlaybackTime(seekPreviewMs)} / \${formatPlaybackTime(gestureDurationMs)}"
+                                }
                             }
-
-                            VerticalGestureMode.VIDEO_SWITCH -> Unit
+                            DragAxis.VERTICAL -> {
+                                val ratio = (-totalY / height).coerceIn(-1f, 1f)
+                                when (gestureMode) {
+                                    VerticalGestureMode.BRIGHTNESS -> {
+                                        val value = (startBrightness + ratio).coerceIn(0.01f, 1f)
+                                        val params = activity.window.attributes
+                                        params.screenBrightness = value
+                                        activity.window.attributes = params
+                                        overlay = "亮度 \${(value * 100).toInt()}%"
+                                    }
+                                    VerticalGestureMode.VOLUME -> {
+                                        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                                        val value = (startVolume + ratio * max).toInt().coerceIn(0, max)
+                                        audio.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0)
+                                        overlay = "音量 \${(value * 100f / max).toInt()}%"
+                                    }
+                                    VerticalGestureMode.VIDEO_SWITCH -> Unit
+                                }
+                            }
+                            DragAxis.UNDECIDED -> Unit
                         }
                     },
                     onDragEnd = {
-                        if (gestureMode == VerticalGestureMode.VIDEO_SWITCH && abs(totalY) >= height * 0.12f) {
-                            if (totalY < 0f) playNextVideo() else playPreviousVideo()
+                        when (gestureAxis) {
+                            DragAxis.HORIZONTAL_SEEK -> {
+                                if (isSeeking) {
+                                    seekTo(seekPreviewMs)
+                                    isSeeking = false
+                                }
+                            }
+                            DragAxis.VERTICAL -> {
+                                if (
+                                    gestureMode == VerticalGestureMode.VIDEO_SWITCH &&
+                                    abs(totalY) >= height * 0.12f
+                                ) {
+                                    if (totalY < 0f) playNextVideo() else playPreviousVideo()
+                                }
+                            }
+                            DragAxis.UNDECIDED -> Unit
                         }
                     },
-                    onDragCancel = { totalY = 0f },
+                    onDragCancel = {
+                        isSeeking = false
+                        seekPreviewMs = positionMs
+                        totalX = 0f
+                        totalY = 0f
+                    },
                 )
             }
             .pointerInput(playing, controlsVisible, width, height, backend) {
                 detectTapGestures(
                     onTap = { point ->
-                        val inCenter = point.x in width * 0.25f..width * 0.75f &&
-                            point.y in height * 0.20f..height * 0.80f
-                        if (inCenter && isPlayingNow()) {
-                            pausePlayback()
-                        } else if (!inCenter) {
-                            controlsVisible = !controlsVisible
+                        val inCenter = point.x in width * CENTER_TAP_MIN_X..width * CENTER_TAP_MAX_X &&
+                            point.y in height * CENTER_TAP_MIN_Y..height * CENTER_TAP_MAX_Y
+                        if (inCenter) {
+                            if (isPlayingNow()) pausePlayback() else resumePlayback()
+                        } else {
+                            // 点击只能唤出并延长显示时间，不能主动隐藏控制栏。
+                            showControlsForInteraction()
                         }
                     },
                 )
@@ -562,7 +706,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                         .padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(onClick = onExit) {
+                    IconButton(onClick = { exitPlayer() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = Color.White)
                     }
                     Text(
@@ -572,12 +716,15 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = { speedDialog = true }) {
+                    TextButton(onClick = {
+                        showControlsForInteraction()
+                        speedDialog = true
+                    }) {
                         Text("${speedText(speed)}×", color = Color.White)
                     }
                     IconButton(onClick = {
                         targetLandscape = !isLandscapeScreen
-                        controlsVisible = true
+                        showControlsForInteraction()
                     }) {
                         Icon(Icons.Default.Rotate90DegreesCcw, "横竖方向切换", tint = Color.White)
                     }
@@ -599,7 +746,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                         onValueChange = { value ->
                             isSeeking = true
                             seekPreviewMs = value
-                            controlsVisible = true
+                            showControlsForInteraction()
                         },
                         onValueChangeFinished = {
                             seekTo(seekPreviewMs)
@@ -670,7 +817,10 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
 
     if (speedDialog) {
         AlertDialog(
-            onDismissRequest = { speedDialog = false },
+            onDismissRequest = {
+                speedDialog = false
+                showControlsForInteraction()
+            },
             title = { Text("播放速度") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -688,6 +838,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                                             PlaybackBackend.VLC -> runCatching { vlcPlayer.rate = value }
                                         }
                                         speedDialog = false
+                                        showControlsForInteraction()
                                     },
                                     modifier = Modifier.weight(1f),
                                 ) {
@@ -700,7 +851,12 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                 }
             },
             confirmButton = {
-                TextButton(onClick = { speedDialog = false }) { Text("关闭") }
+                TextButton(onClick = {
+                    speedDialog = false
+                    showControlsForInteraction()
+                }) {
+                    Text("关闭")
+                }
             },
         )
     }
@@ -761,6 +917,24 @@ private fun CompactSeekBar(
             center = Offset(thumbX, centerY),
         )
     }
+}
+
+internal fun seekPositionForHorizontalDrag(
+    startPositionMs: Long,
+    durationMs: Long,
+    dragPx: Float,
+    screenWidthPx: Float,
+): Long {
+    if (durationMs <= 0L || screenWidthPx <= 0f) return startPositionMs.coerceAtLeast(0L)
+    val safeStart = startPositionMs.coerceIn(0L, durationMs)
+    val deltaMs = kotlin.math.round(durationMs.toDouble() * dragPx.toDouble() / screenWidthPx.toDouble()).toLong()
+    return (safeStart + deltaMs).coerceIn(0L, durationMs)
+}
+
+internal fun normalizeResumePosition(savedPositionMs: Long, durationMs: Long): Long {
+    if (savedPositionMs <= 0L) return 0L
+    if (durationMs > 0L && savedPositionMs >= durationMs) return 0L
+    return savedPositionMs
 }
 
 private fun preferredBackend(video: VideoItem?): PlaybackBackend {
