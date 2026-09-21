@@ -57,8 +57,8 @@ jobs:
           for apk in "${apks[@]}"; do
             badging="$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk")"
             echo "$badging" | grep -q "package: name='com.luxiaoshi.jianbo'"
-            echo "$badging" | grep -q "versionCode='14'"
-            echo "$badging" | grep -q "versionName='1.0.13'"
+            echo "$badging" | grep -q "versionCode='15'"
+            echo "$badging" | grep -q "versionName='1.0.14'"
           done
 
       - name: Upload unsigned release APK

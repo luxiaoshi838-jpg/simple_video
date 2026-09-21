@@ -554,6 +554,9 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                             } else {
                                 DragAxis.VERTICAL
                             }
+                            if (gestureAxis == DragAxis.HORIZONTAL_SEEK) {
+                                overlay = null
+                            }
                         }
                         when (gestureAxis) {
                             DragAxis.HORIZONTAL_SEEK -> {
@@ -565,8 +568,6 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                                         dragPx = totalX,
                                         screenWidthPx = width.toFloat(),
                                     )
-                                    overlay =
-                                        "\${formatPlaybackTime(seekPreviewMs)} / \${formatPlaybackTime(gestureDurationMs)}"
                                 }
                             }
                             DragAxis.VERTICAL -> {
@@ -577,13 +578,13 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                                         val params = activity.window.attributes
                                         params.screenBrightness = value
                                         activity.window.attributes = params
-                                        overlay = "亮度 \${(value * 100).toInt()}%"
+                                        overlay = "亮度 ${(value * 100).toInt()}%"
                                     }
                                     VerticalGestureMode.VOLUME -> {
                                         val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                                         val value = (startVolume + ratio * max).toInt().coerceIn(0, max)
                                         audio.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0)
-                                        overlay = "音量 \${(value * 100f / max).toInt()}%"
+                                        overlay = "音量 ${(value * 100f / max).toInt()}%"
                                     }
                                     VerticalGestureMode.VIDEO_SWITCH -> Unit
                                 }
