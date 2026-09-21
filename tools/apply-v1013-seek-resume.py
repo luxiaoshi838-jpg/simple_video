@@ -561,9 +561,31 @@ workflow = replace_once(
 )
 workflow = replace_once(
     workflow,
-    '        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"',
-    '        run: /usr/local/lib/android/sdk/cmdline-tools/16.0/bin/sdkmanager "platforms;android-36" "build-tools;36.0.0"',
-    "use sdkmanager absolute path",
+    "    runs-on: ubuntu-latest\n    timeout-minutes: 20",
+    """    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ANDROID_HOME: /home/runner/android-sdk
+      ANDROID_SDK_ROOT: /home/runner/android-sdk""",
+    "set deterministic Android SDK home",
+)
+workflow = replace_once(
+    workflow,
+    """      - name: Install Android API 36
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+""",
+    """      - name: Install Android SDK and API 36
+        run: |
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+          curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/android-commandline.zip
+          rm -rf /tmp/android-commandline
+          mkdir -p /tmp/android-commandline
+          unzip -q /tmp/android-commandline.zip -d /tmp/android-commandline
+          mv /tmp/android-commandline/cmdline-tools "$ANDROID_HOME/cmdline-tools/latest"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+""",
+    "bootstrap Android SDK",
 )
 workflow = replace_once(
     workflow,
