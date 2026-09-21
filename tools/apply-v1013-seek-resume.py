@@ -552,6 +552,15 @@ workflow = replace_once(
 )
 workflow = replace_once(
     workflow,
+    """      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+""",
+    "",
+    "remove broken setup-android action",
+)
+workflow = replace_once(
+    workflow,
     "      - name: Build unsigned release APK\n        run: gradle :app:assembleRelease --stacktrace",
     """      - name: Run unit tests
         run: gradle :app:testDebugUnitTest :app:testReleaseUnitTest --stacktrace
