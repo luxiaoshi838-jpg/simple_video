@@ -481,10 +481,6 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(orientationMode, currentIndex) {
-        applyPlaybackOrientation(videos.getOrNull(currentIndex))
-    }
-
     LaunchedEffect(targetLandscape) {
         activity.requestedOrientation = when (targetLandscape) {
             true -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
