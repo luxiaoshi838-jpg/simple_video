@@ -158,7 +158,7 @@ fun PlayerScreen(
     fun applyPlaybackOrientation(video: VideoItem?) {
         // The toolbar mode is a session-wide policy. Re-evaluate it for every selected,
         // manually switched, or auto-advanced video rather than only the first item.
-        applyPlaybackOrientation(video)
+        targetLandscape = orientationTarget(orientationMode, naturalLandscape(video))
     }
 
     fun showControlsForInteraction() {
@@ -206,7 +206,7 @@ fun PlayerScreen(
         seekPreviewMs = resumePositionMs
         durationMs = video.durationMs.coerceAtLeast(0L)
         isSeeking = false
-        targetLandscape = orientationTarget(orientationMode, naturalLandscape(video))
+        applyPlaybackOrientation(video)
         playing = false
         showControlsForInteraction()
     }
@@ -479,10 +479,6 @@ fun PlayerScreen(
                 vlcPlayer.play()
             }
         }
-    }
-
-    LaunchedEffect(orientationMode, currentIndex) {
-        applyPlaybackOrientation(videos.getOrNull(currentIndex))
     }
 
     LaunchedEffect(targetLandscape) {

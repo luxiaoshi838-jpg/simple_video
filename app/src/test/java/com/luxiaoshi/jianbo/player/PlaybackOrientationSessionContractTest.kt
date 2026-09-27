@@ -21,7 +21,7 @@ class PlaybackOrientationSessionContractTest {
             "LaunchedEffect(currentIndex, backend, vlcVideoLayout, orientationMode)",
         )
         val loadEnd = source.indexOf(
-            "LaunchedEffect(orientationMode, currentIndex)",
+            "LaunchedEffect(targetLandscape)",
             loadStart,
         )
         require(loadStart >= 0 && loadEnd > loadStart)
