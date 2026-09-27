@@ -31,6 +31,7 @@ import com.luxiaoshi.jianbo.data.ExternalOpenRequest
 import com.luxiaoshi.jianbo.data.ExternalUriLocation
 import com.luxiaoshi.jianbo.data.ExternalUriLocationResolver
 import com.luxiaoshi.jianbo.data.LibraryRepository
+import com.luxiaoshi.jianbo.player.PlaybackOrientationMode
 import com.luxiaoshi.jianbo.player.PlayerScreen
 import com.luxiaoshi.jianbo.ui.theme.JianboTheme
 
@@ -41,10 +42,12 @@ class ExternalOpenActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        val playbackOrientationMode = JianboPreferences(applicationContext).playbackOrientationMode()
         setContent {
             JianboTheme {
                 ExternalOpenRoute(
                     incomingIntent = intent,
+                    playbackOrientationMode = playbackOrientationMode,
                     repository = repository,
                     locationResolver = locationResolver,
                     finishActivity = ::finish,
@@ -66,6 +69,7 @@ private sealed interface ExternalOpenState {
 @Composable
 private fun ExternalOpenRoute(
     incomingIntent: Intent,
+    playbackOrientationMode: PlaybackOrientationMode,
     repository: LibraryRepository,
     locationResolver: ExternalUriLocationResolver,
     finishActivity: () -> Unit,
@@ -91,6 +95,7 @@ private fun ExternalOpenRoute(
         ExternalOpenState.Unsupported -> UnsupportedExternalVideo(finishActivity)
         is ExternalOpenState.Ready -> ExternalVideoPlayer(
             request = current.request,
+            playbackOrientationMode = playbackOrientationMode,
             location = current.location,
             repository = repository,
             finishActivity = finishActivity,
@@ -101,6 +106,7 @@ private fun ExternalOpenRoute(
 @Composable
 private fun ExternalVideoPlayer(
     request: ExternalOpenRequest,
+    playbackOrientationMode: PlaybackOrientationMode,
     location: ExternalUriLocation,
     repository: LibraryRepository,
     finishActivity: () -> Unit,
@@ -116,6 +122,7 @@ private fun ExternalVideoPlayer(
         PlayerScreen(
             videos = listOf(request.video),
             startIndex = 0,
+            orientationMode = playbackOrientationMode,
             onExit = {
                 playerVisible = false
                 permissionDialogVisible = true
