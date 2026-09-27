@@ -155,6 +155,12 @@ fun PlayerScreen(
     var controlsInteractionTick by remember { mutableLongStateOf(0L) }
     val isLandscapeScreen = width > height
 
+    fun applyPlaybackOrientation(video: VideoItem?) {
+        // The toolbar mode is a session-wide policy. Re-evaluate it for every selected,
+        // manually switched, or auto-advanced video rather than only the first item.
+        applyPlaybackOrientation(video)
+    }
+
     fun showControlsForInteraction() {
         controlsVisible = true
         controlsInteractionTick += 1L
@@ -422,6 +428,7 @@ fun PlayerScreen(
         if (backend == PlaybackBackend.VLC && layout != null) {
             runCatching { vlcPlayer.detachViews() }
             vlcPlayer.attachViews(layout, null, true, false)
+            // VLC auto-scale + native aspect ratio: fit inside the rotated screen, never stretch.
             runCatching { vlcPlayer.setScale(0f) }
             runCatching { vlcPlayer.setAspectRatio(null) }
         }
@@ -430,8 +437,9 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(currentIndex, backend, vlcVideoLayout) {
+    LaunchedEffect(currentIndex, backend, vlcVideoLayout, orientationMode) {
         val video = videos.getOrNull(currentIndex) ?: return@LaunchedEffect
+        applyPlaybackOrientation(video)
         playing = false
         positionMs = resumePositionMs
         seekPreviewMs = resumePositionMs
@@ -474,8 +482,7 @@ fun PlayerScreen(
     }
 
     LaunchedEffect(orientationMode, currentIndex) {
-        val video = videos.getOrNull(currentIndex)
-        targetLandscape = orientationTarget(orientationMode, naturalLandscape(video))
+        applyPlaybackOrientation(videos.getOrNull(currentIndex))
     }
 
     LaunchedEffect(targetLandscape) {
@@ -660,6 +667,7 @@ fun PlayerScreen(
                                 ViewGroup.LayoutParams.MATCH_PARENT,
                             )
                             useController = false
+                            // Never stretch/crop to fill after screen rotation.
                             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                             player = exoPlayer
                             setShutterBackgroundColor(android.graphics.Color.BLACK)
@@ -667,6 +675,7 @@ fun PlayerScreen(
                     },
                     update = { view ->
                         view.player = exoPlayer
+                        // Reassert FIT on every recomposition/orientation change.
                         view.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                     },
                 )
