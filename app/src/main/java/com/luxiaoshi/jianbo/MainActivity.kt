@@ -40,8 +40,12 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.ScreenRotation
+import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.VideoFile
@@ -70,6 +74,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -82,7 +87,9 @@ import com.luxiaoshi.jianbo.data.LibraryUiState
 import com.luxiaoshi.jianbo.data.VideoGroup
 import com.luxiaoshi.jianbo.data.VideoItem
 import com.luxiaoshi.jianbo.data.VideoThumbnailCache
+import com.luxiaoshi.jianbo.player.PlaybackOrientationMode
 import com.luxiaoshi.jianbo.player.PlayerScreen
+import com.luxiaoshi.jianbo.player.nextPlaybackOrientationMode
 import com.luxiaoshi.jianbo.ui.theme.JianboTheme
 
 class MainActivity : ComponentActivity() {
@@ -101,6 +108,14 @@ private data class Playback(val videos: List<VideoItem>, val index: Int)
 private fun JianboApp(viewModel: LibraryViewModel) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val preferences = remember { JianboPreferences(context.applicationContext) }
+    var playbackOrientationMode by remember {
+        mutableStateOf(preferences.playbackOrientationMode())
+    }
+    var recentFoldersFirst by remember {
+        mutableStateOf(preferences.recentFoldersFirst())
+    }
+    var playbackHistoryRevision by remember { mutableStateOf(0) }
     var openedGroupKey by rememberSaveable { mutableStateOf<String?>(null) }
     var returnVideoIndex by rememberSaveable { mutableStateOf<Int?>(null) }
     var playback by remember { mutableStateOf<Playback?>(null) }
@@ -125,9 +140,22 @@ private fun JianboApp(viewModel: LibraryViewModel) {
         PlayerScreen(
             videos = it.videos,
             startIndex = it.index,
+            orientationMode = playbackOrientationMode,
             onExit = { playback = null },
         )
         return
+    }
+
+    val groupsForDisplay = remember(
+        state.groups,
+        recentFoldersFirst,
+        playbackHistoryRevision,
+    ) {
+        sortGroupsForDisplay(
+            groups = state.groups,
+            recentFirst = recentFoldersFirst,
+            lastPlayedAt = preferences::groupLastPlayedAt,
+        )
     }
 
     val group = state.groups.firstOrNull { it.key == openedGroupKey }
@@ -145,6 +173,8 @@ private fun JianboApp(viewModel: LibraryViewModel) {
                 returnVideoIndex = null
             },
             play = { index ->
+                preferences.markGroupPlayed(group.key)
+                playbackHistoryRevision += 1
                 returnVideoIndex = index
                 playback = Playback(group.videos, index)
             },
@@ -152,6 +182,18 @@ private fun JianboApp(viewModel: LibraryViewModel) {
     } else {
         LibraryScreen(
             state = state,
+            groups = groupsForDisplay,
+            playbackOrientationMode = playbackOrientationMode,
+            recentFoldersFirst = recentFoldersFirst,
+            cyclePlaybackOrientation = {
+                val next = nextPlaybackOrientationMode(playbackOrientationMode)
+                playbackOrientationMode = next
+                preferences.setPlaybackOrientationMode(next)
+            },
+            toggleFolderSort = {
+                recentFoldersFirst = !recentFoldersFirst
+                preferences.setRecentFoldersFirst(recentFoldersFirst)
+            },
             requestPermission = { permissionLauncher.launch(permission) },
             requestHiddenScanAccess = {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -185,6 +227,11 @@ private fun JianboApp(viewModel: LibraryViewModel) {
 @Composable
 private fun LibraryScreen(
     state: LibraryUiState,
+    groups: List<VideoGroup>,
+    playbackOrientationMode: PlaybackOrientationMode,
+    recentFoldersFirst: Boolean,
+    cyclePlaybackOrientation: () -> Unit,
+    toggleFolderSort: () -> Unit,
     requestPermission: () -> Unit,
     requestHiddenScanAccess: () -> Unit,
     importFolder: () -> Unit,
@@ -223,7 +270,44 @@ private fun LibraryScreen(
                         Icon(Icons.Default.DeleteOutline, "从简播移除")
                     }
                 } else {
-                    IconButton(onClick = refresh) { Icon(Icons.Default.Refresh, "刷新") }
+                    IconButton(onClick = toggleFolderSort) {
+                        Icon(
+                            imageVector = if (recentFoldersFirst) Icons.Default.History else Icons.Default.Sort,
+                            contentDescription = if (recentFoldersFirst) {
+                                "文件夹排序：最近播放优先"
+                            } else {
+                                "文件夹排序：默认顺序"
+                            },
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    IconButton(onClick = cyclePlaybackOrientation) {
+                        Icon(
+                            imageVector = when (playbackOrientationMode) {
+                                PlaybackOrientationMode.ADAPTIVE -> Icons.Default.ScreenRotation
+                                PlaybackOrientationMode.PORTRAIT -> Icons.Default.PhoneAndroid
+                                PlaybackOrientationMode.LANDSCAPE -> Icons.Default.PhoneAndroid
+                            },
+                            contentDescription = when (playbackOrientationMode) {
+                                PlaybackOrientationMode.ADAPTIVE -> "播放页面：自适配"
+                                PlaybackOrientationMode.PORTRAIT -> "播放页面：默认竖屏"
+                                PlaybackOrientationMode.LANDSCAPE -> "播放页面：默认横屏"
+                            },
+                            modifier = if (playbackOrientationMode == PlaybackOrientationMode.LANDSCAPE) {
+                                Modifier.rotate(90f)
+                            } else {
+                                Modifier
+                            },
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    IconButton(onClick = refresh) {
+                        Icon(
+                            Icons.Default.Refresh,
+                            "刷新",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                     if (state.hiddenGroupCount > 0) {
                         IconButton(onClick = restoreGroups) {
                             Icon(Icons.Default.Restore, "恢复隐藏分组")
@@ -274,7 +358,7 @@ private fun LibraryScreen(
                 if (state.groups.isEmpty() && !state.isLoading) {
                     item { EmptyLibrary(state.permissionGranted, requestPermission, importFolder) }
                 }
-                itemsIndexed(state.groups, key = { _, item -> item.key }) { _, group ->
+                itemsIndexed(groups, key = { _, item -> item.key }) { _, group ->
                     val checked = group.key in selected
                     Card(
                         modifier = Modifier.fillMaxWidth().combinedClickable(

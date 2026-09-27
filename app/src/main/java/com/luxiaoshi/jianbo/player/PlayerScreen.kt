@@ -97,7 +97,12 @@ private enum class VerticalGestureMode { BRIGHTNESS, VIDEO_SWITCH, VOLUME }
 private enum class DragAxis { UNDECIDED, HORIZONTAL_SEEK, VERTICAL }
 
 @Composable
-fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
+fun PlayerScreen(
+    videos: List<VideoItem>,
+    startIndex: Int,
+    orientationMode: PlaybackOrientationMode = PlaybackOrientationMode.ADAPTIVE,
+    onExit: () -> Unit,
+) {
     val context = LocalContext.current
     val activity = context as Activity
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -131,7 +136,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
     var speed by remember { mutableFloatStateOf(1f) }
     var speedDialog by remember { mutableStateOf(false) }
     var targetLandscape by remember {
-        mutableStateOf(naturalLandscape(videos.getOrNull(initialIndex)))
+        mutableStateOf(orientationTarget(orientationMode, naturalLandscape(videos.getOrNull(initialIndex))))
     }
     var overlay by remember { mutableStateOf<String?>(null) }
     var width by remember { mutableIntStateOf(1) }
@@ -195,7 +200,7 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
         seekPreviewMs = resumePositionMs
         durationMs = video.durationMs.coerceAtLeast(0L)
         isSeeking = false
-        targetLandscape = naturalLandscape(video)
+        targetLandscape = orientationTarget(orientationMode, naturalLandscape(video))
         playing = false
         showControlsForInteraction()
     }
@@ -310,7 +315,12 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
             }
 
             override fun onVideoSizeChanged(videoSize: VideoSize) {
-                if (backend == PlaybackBackend.MEDIA3 && videoSize.width > 0 && videoSize.height > 0) {
+                if (
+                    orientationMode == PlaybackOrientationMode.ADAPTIVE &&
+                    backend == PlaybackBackend.MEDIA3 &&
+                    videoSize.width > 0 &&
+                    videoSize.height > 0
+                ) {
                     targetLandscape = videoSize.width > videoSize.height
                 }
             }
@@ -461,6 +471,11 @@ fun PlayerScreen(videos: List<VideoItem>, startIndex: Int, onExit: () -> Unit) {
                 vlcPlayer.play()
             }
         }
+    }
+
+    LaunchedEffect(orientationMode, currentIndex) {
+        val video = videos.getOrNull(currentIndex)
+        targetLandscape = orientationTarget(orientationMode, naturalLandscape(video))
     }
 
     LaunchedEffect(targetLandscape) {
